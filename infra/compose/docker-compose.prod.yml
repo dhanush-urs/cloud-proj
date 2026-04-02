@@ -1,0 +1,125 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: repobrain-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-repobrain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-repobrain}
+      POSTGRES_DB: ${POSTGRES_DB:-repobrain}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-repobrain} -d ${POSTGRES_DB:-repobrain}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: repobrain-redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: repobrain-neo4j
+    restart: always
+    environment:
+      NEO4J_AUTH: neo4j/repobrain123
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+
+  api:
+    build:
+      context: ../../
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: repobrain-api
+    restart: always
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://repobrain:repobrain@postgres:5432/repobrain
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      NEO4J_URI: bolt://neo4j:7687
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    env_file:
+      - ../../.env
+    volumes:
+      - repo_data:/data/repos
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../../
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: repobrain-worker
+    restart: always
+    command: ["sh", "-c", "celery -A app.workers.celery_app.celery_app worker --loglevel=info"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://repobrain:repobrain@postgres:5432/repobrain
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      NEO4J_URI: bolt://neo4j:7687
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    env_file:
+      - ../../.env
+    volumes:
+      - repo_data:/data/repos
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../../
+      dockerfile: infra/docker/web.Dockerfile
+    container_name: repobrain-web
+    restart: always
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  neo4j_data:
+  neo4j_logs:
+  repo_data:

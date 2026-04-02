@@ -1,0 +1,8 @@
+name: frontend-ci
+on:
+  workflow_dispatch:
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Frontend CI will be added in Module 14"

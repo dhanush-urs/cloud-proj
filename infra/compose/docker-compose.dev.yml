@@ -1,0 +1,114 @@
+services:
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    container_name: repobrain-web
+    command: sh -c "CI=true pnpm install && pnpm dev"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../apps/web:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - api
+    networks:
+      - repobrain-net
+
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    container_name: repobrain-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../../apps/api:/app
+      - ../../.env:/app/.env
+      - ../../data:/app/data
+    env_file:
+      - ../../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      neo4j:
+        condition: service_started
+    networks:
+      - repobrain-net
+
+  worker:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    container_name: repobrain-worker
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info
+    volumes:
+      - ../../apps/api:/app
+      - ../../.env:/app/.env
+      - ../../data:/app/data
+    env_file:
+      - ../../.env
+    depends_on:
+      - api
+      - redis
+      - postgres
+    networks:
+      - repobrain-net
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: repobrain-postgres
+    environment:
+      POSTGRES_DB: repobrain
+      POSTGRES_USER: repobrain
+      POSTGRES_PASSWORD: repobrain
+    ports:
+      - "5432:5432"
+    volumes:
+      - repobrain-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repobrain -d repobrain"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - repobrain-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: repobrain-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - repobrain-redis-data:/data
+    networks:
+      - repobrain-net
+
+  neo4j:
+    image: neo4j:5.26
+    container_name: repobrain-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/repobrainneo4j
+      NEO4J_server_memory_heap_initial__size: 512M
+      NEO4J_server_memory_heap_max__size: 512M
+      NEO4J_server_memory_pagecache_size: 256M
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - repobrain-neo4j-data:/data
+    networks:
+      - repobrain-net
+
+networks:
+  repobrain-net:
+    driver: bridge
+
+volumes:
+  repobrain-postgres-data:
+  repobrain-redis-data:
+  repobrain-neo4j-data:

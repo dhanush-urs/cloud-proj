@@ -1,0 +1,8 @@
+name: docker-build
+on:
+  workflow_dispatch:
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Docker build pipeline will be added in Module 14"
