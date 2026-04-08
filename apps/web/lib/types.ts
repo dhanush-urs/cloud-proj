@@ -1,8 +1,12 @@
 export type Repository = {
   id: string;
+  name: string;
+  owner?: string;
   repo_url: string;
   default_branch: string;
+  local_path?: string | null;
   status: string;
+  last_error?: string | null;
   primary_language?: string | null;
   framework?: string | null;
   created_at?: string;

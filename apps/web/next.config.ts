@@ -3,9 +3,8 @@ import type { NextConfig } from "next";
 const nextConfig: any = {
   reactStrictMode: true,
   output: "standalone",
-  experimental: {
-    outputFileTracingRoot: require("path").join(__dirname, "../../"),
-  },
+  outputFileTracingRoot: require("path").join(__dirname, "../../"),
+  experimental: {},
 };
 
 export default nextConfig;

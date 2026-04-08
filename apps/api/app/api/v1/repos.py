@@ -73,6 +73,7 @@ def get_repo(repo_id: str, db: Session = Depends(get_db)):
             default_branch=repo.default_branch or "main",
             local_path=getattr(repo, "local_path", None),
             status=repo.status,
+            last_error=getattr(repo, "last_error", None),
             primary_language=getattr(repo, "primary_language", "unknown"),
             framework=getattr(repo, "detected_frameworks", "none"),
             created_at=repo.created_at,

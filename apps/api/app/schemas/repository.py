@@ -18,6 +18,7 @@ class RepoResponse(BaseModel):
     status: str
     primary_language: str | None = None
     framework: str | None = None
+    last_error: str | None = None
     created_at: datetime
 
 

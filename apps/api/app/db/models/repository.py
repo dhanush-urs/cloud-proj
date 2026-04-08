@@ -24,6 +24,7 @@ class Repository(Base):
     primary_language: Mapped[str | None] = mapped_column(String(100), nullable=True)
     detected_languages: Mapped[str | None] = mapped_column(Text, nullable=True)
     detected_frameworks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     total_files: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_symbols: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
