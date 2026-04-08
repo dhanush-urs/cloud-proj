@@ -155,7 +155,7 @@ export function AskRepoPanel({ result }: Props) {
             </div>
 
             {/* Precision Analysis Supplement */}
-            {result.analysis && (
+            {result.rename_analysis && (
               <div className="border-t border-slate-800 bg-indigo-950/10 p-5 mt-4 group">
                 <div className="flex items-center gap-2 mb-4">
                   <span className="relative flex h-2 w-2">
@@ -169,12 +169,12 @@ export function AskRepoPanel({ result }: Props) {
                   <div className="space-y-5">
                     <div className="flex flex-wrap items-center gap-3">
                       <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700/50 text-xs font-mono">
-                         <span className="text-slate-500 line-through">{result.analysis.old_symbol}</span>
+                         <span className="text-slate-500 line-through">{result.rename_analysis.symbol_name}</span>
                          <svg className="w-4 h-4 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
-                         <span className="text-indigo-300 font-bold">{result.analysis.new_symbol}</span>
+                         <span className="text-indigo-300 font-bold">{result.rename_analysis.new_name}</span>
                       </div>
                       
-                      {result.analysis.is_full_refactor ? (
+                      {result.rename_analysis.full_rename_safe ? (
                         <span className="flex items-center gap-1.5 text-[10px] bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full border border-emerald-500/20 font-bold uppercase tracking-wider">
                           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                           Safe Refactor
@@ -187,27 +187,27 @@ export function AskRepoPanel({ result }: Props) {
                       )}
                     </div>
 
-                    {result.analysis.remaining_old_usages && result.analysis.remaining_old_usages.length > 0 && (
+                    {result.rename_analysis.same_file_references && result.rename_analysis.same_file_references.length > 0 && (
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest px-1">Unresolved References</p>
                           <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono italic">same-file resolution</span>
                         </div>
                         <div className="grid gap-2.5">
-                          {result.analysis.remaining_old_usages.slice(0, 5).map((usage, ux) => (
+                          {result.rename_analysis.same_file_references.slice(0, 5).map((usage, ux) => (
                             <div key={ux} className="flex flex-col rounded-lg border border-slate-700/50 bg-slate-900/50 p-3 hover:border-rose-500/30 transition-all duration-300">
                               <div className="flex items-center justify-between gap-4 overflow-hidden">
-                                <code className="text-[11px] text-indigo-200/90 truncate font-mono bg-indigo-950/30 px-1 rounded">{usage.text}</code>
-                                <span className="text-[10px] font-bold text-slate-500 shrink-0 tabular-nums">LINE {usage.line}</span>
+                                <code className="text-[11px] text-indigo-200/90 truncate font-mono bg-indigo-950/30 px-1 rounded">{usage.line_text}</code>
+                                <span className="text-[10px] font-bold text-slate-500 shrink-0 tabular-nums">LINE {usage.line_no}</span>
                               </div>
                               <div className="flex items-center gap-1.5 mt-2">
                                 <div className="h-1 w-1 rounded-full bg-rose-500" />
-                                <span className="text-[10px] text-rose-400/80 font-medium">{usage.reason}</span>
+                                <span className="text-[10px] text-rose-400/80 font-medium">Unresolved reference</span>
                               </div>
                             </div>
                           ))}
-                          {result.analysis.remaining_old_usages.length > 5 && (
-                            <p className="text-[10px] text-slate-600 italic pl-1">...and {result.analysis.remaining_old_usages.length - 5} more references</p>
+                          {result.rename_analysis.same_file_references.length > 5 && (
+                            <p className="text-[10px] text-slate-600 italic pl-1">...and {result.rename_analysis.same_file_references.length - 5} more references</p>
                           )}
                         </div>
                       </div>
@@ -222,7 +222,7 @@ export function AskRepoPanel({ result }: Props) {
                       <span className="text-[10px] font-bold text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">{result.deletion_type || "Generic Deletion"}</span>
                     </div>
                     <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-[13px] text-amber-200/70 leading-relaxed italic shadow-inner">
-                      {result.analysis.description || "Performing heuristic dependency trace for potential orphaned references..."}
+                      Performing heuristic dependency trace for potential orphaned references...
                     </div>
                   </div>
                 )}

@@ -131,6 +131,8 @@ def ask_repository(
         notes=result.get("notes", []),
         query_type=result.get("query_type"),
         answer_mode=result.get("answer_mode"),
+        operation=result.get("operation"),
+        deletion_type=result.get("deletion_type"),
         snippet_found=result.get("snippet_found"),
         # Line-level resolution fields
         resolved_file=result.get("resolved_file"),
@@ -138,6 +140,7 @@ def ask_repository(
         matched_line=result.get("matched_line"),
         enclosing_scope=result.get("enclosing_scope"),
         line_type=result.get("line_type"),
+        rename_analysis=result.get("rename_analysis"),
     )
 
 

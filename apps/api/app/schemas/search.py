@@ -56,6 +56,8 @@ class AskRepoResponse(BaseModel):
     notes: list[str] = []
     query_type: str | None = None
     answer_mode: str | None = None
+    operation: str | None = None
+    deletion_type: str | None = None
     snippet_found: bool | None = None
     # Line-level resolution fields (populated for line_impact / line_change_impact queries)
     resolved_file: str | None = None

@@ -552,6 +552,8 @@ class RAGService:
             "line_type": line_metadata.get("line_type"),
             "snippet_found": line_metadata.get("found", False),
             "rename_analysis": line_metadata.get("rename_analysis"),
+            "operation": line_metadata.get("operation"),
+            "deletion_type": line_metadata.get("deletion_type"),
         }
 
     @staticmethod
@@ -1116,6 +1118,8 @@ class RAGService:
 
         # Clean up non-serializable fields before returning metadata
         line_metadata = {k: v for k, v in res.items() if k not in ("file_record", "symbol_record")}
+        line_metadata["operation"] = classification.get("operation")
+        line_metadata["deletion_type"] = classification.get("deletion_type")
         if rename_analysis:
             line_metadata["rename_analysis"] = rename_analysis
         return evidence, line_metadata

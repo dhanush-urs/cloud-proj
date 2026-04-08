@@ -78,14 +78,21 @@ export type AskRepoResponse = {
     start_line?: number | null;
     end_line?: number | null;
     chunk_id: string;
+    match_type?: string | null;
   }>;
   mode: string;
   llm_model?: string | null;
   confidence?: string | null;
   query_type?: string | null;
+  notes?: string[];
+  operation?: string | null;
+  deletion_type?: string | null;
   resolved_file?: string | null;
   resolved_line_number?: number | null;
   matched_line?: string | null;
+  enclosing_scope?: string | null;
+  line_type?: string | null;
+  snippet_found?: boolean;
   rename_analysis?: RenameAnalysis | null;
 };
 
