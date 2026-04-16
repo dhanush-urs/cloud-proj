@@ -580,9 +580,8 @@ class RAGService:
 
     def _retrieve_project_summary(self, repository) -> list[dict]:
         """
-        Multi-tier repo-intelligence evidence gathering for REPO_SUMMARY intent.
-        Priority order: repo metadata > README/docs > entrypoints > source symbols.
-        Ignores noisy files (lockfiles, gitignore, build artifacts, node_modules).
+        Generalized, hierarchy-enforced repo-intelligence evidence gathering.
+        Priority: Stored Metadata > README/Docs > Manifests > Entrypoints.
         """
         _NOISE_PATTERNS = [
             ".gitignore", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
@@ -596,24 +595,16 @@ class RAGService:
 
         results: list[dict] = []
 
-        # ── Tier 1: Stored repository metadata (highest priority)
+        # ── Tier 1: Stored repository metadata
+        meta_parts = []
         if repository.summary:
-            results.append({
-                "file_path": "REPO_METADATA",
-                "snippet": f"REPOSITORY SUMMARY (from parse stage):\n{repository.summary}",
-                "score": 1.0,
-                "match_type": "repo_metadata",
-            })
-        lang = getattr(repository, "primary_language", None)
-        framework = getattr(repository, "framework", None)
-        if lang or framework:
-            meta_parts = []
-            if lang:
-                meta_parts.append(f"Primary Language: {lang}")
-            if framework:
-                meta_parts.append(f"Framework: {framework}")
-            meta_parts.append(f"Repository URL: {getattr(repository, 'repo_url', 'unknown')}")
-            meta_parts.append(f"Default Branch: {getattr(repository, 'default_branch', 'unknown')}")
+            meta_parts.append(f"Summary: {repository.summary}")
+        if getattr(repository, "primary_language", None):
+            meta_parts.append(f"Language: {repository.primary_language}")
+        if getattr(repository, "framework", None):
+            meta_parts.append(f"Framework: {repository.framework}")
+            
+        if meta_parts:
             results.append({
                 "file_path": "REPO_METADATA",
                 "snippet": "REPOSITORY ATTRIBUTES:\n" + "\n".join(meta_parts),
@@ -621,139 +612,80 @@ class RAGService:
                 "match_type": "repo_metadata",
             })
 
-        # ── Tier 2: README and documentation files
+        # ── Tier 2: README and documentation (Top 5)
         readme_files = list(self.db.scalars(
             select(File).where(
                 File.repository_id == repository.id,
                 or_(
-                    File.path.ilike("%README%"),
-                    File.path.ilike("%readme%"),
-                    File.path.ilike("%CONTRIBUTING%"),
-                    File.path.ilike("%OVERVIEW%"),
-                    File.path.ilike("%ARCHITECTURE%"),
-                    File.path.ilike("%docs/index%"),
-                    File.path.ilike("%docs/README%"),
-                    File.path.ilike("%SETUP%"),
-                    File.path.ilike("%INSTALL%"),
+                    File.path.ilike("README%"),
+                    File.path.ilike("%/README%"),
+                    File.path.ilike("docs/index%"),
+                    File.path.ilike("docs/README%"),
                 )
             ).limit(5)
         ).all())
         for f in readme_files:
             if not _is_noisy(f.path):
-                # Include full README content (up to 3000 chars)
-                content_preview = (f.content or "")[:3000]
                 results.append({
                     "file_id": str(f.id),
                     "file_path": f.path,
-                    "snippet": f"DOCUMENTATION FILE: {f.path}\n{content_preview}",
+                    "snippet": f"README CONTENT ({f.path}):\n{(f.content or '')[:3000]}",
                     "score": 0.98,
                     "match_type": "readme",
                 })
 
-        # ── Tier 3: Entrypoints and launch files
+        # ── Tier 3: Primary Manifests (Dependency Evidence)
+        manifest_files = list(self.db.scalars(
+            select(File).where(
+                File.repository_id == repository.id,
+                or_(
+                    File.path == "package.json",
+                    File.path == "requirements.txt",
+                    File.path == "pyproject.toml",
+                    File.path == "go.mod",
+                    File.path == "pom.xml",
+                    File.path == "build.gradle",
+                    File.path == "Cargo.toml",
+                    File.path == "Pipfile",
+                )
+            ).limit(8)
+        ).all())
+        for f in manifest_files:
+            results.append({
+                "file_id": str(f.id),
+                "file_path": f.path,
+                "snippet": f"PROJECT MANIFEST ({f.path}):\n{(f.content or '')[:2000]}",
+                "score": 0.95,
+                "match_type": "manifest",
+            })
+
+        # ── Tier 4: App Entrypoints / Bootstrap files
         entrypoint_files = list(self.db.scalars(
             select(File).where(
                 File.repository_id == repository.id,
                 or_(
-                    # Python entrypoints
-                    File.path.ilike("%main.py"),
-                    File.path.ilike("%app.py"),
-                    File.path.ilike("%run.py"),
-                    File.path.ilike("%server.py"),
-                    File.path.ilike("%manage.py"),
-                    File.path.ilike("%wsgi.py"),
-                    File.path.ilike("%asgi.py"),
-                    # JS/TS entrypoints
-                    File.path.ilike("%index.js"),
-                    File.path.ilike("%index.ts"),
-                    File.path.ilike("%server.js"),
-                    File.path.ilike("%server.ts"),
-                    File.path.ilike("%App.tsx"),
-                    File.path.ilike("%main.tsx"),
-                    # Java
-                    File.path.ilike("%Main.java"),
-                    File.path.ilike("%Application.java"),
-                    # Infra
-                    File.path.ilike("%Dockerfile"),
-                    File.path.ilike("%docker-compose%"),
-                    # Manifests
-                    File.path.ilike("%package.json"),
-                    File.path.ilike("%pyproject.toml"),
-                    File.path.ilike("%requirements.txt"),
-                    File.path.ilike("%build.gradle"),
-                    File.path.ilike("%pom.xml"),
-                    File.path.ilike("%Makefile"),
+                    File.path.ilike("main.py"),
+                    File.path.ilike("app.py"),
+                    File.path.ilike("index.js"),
+                    File.path.ilike("server.js"),
+                    File.path.ilike("manage.py"),
+                    File.path.ilike("App.tsx"),
+                    File.path.ilike("main.tsx"),
+                    File.path.ilike("next.config.js"),
                 )
-            ).limit(12)
+            ).limit(10)
         ).all())
         for f in entrypoint_files:
             if not _is_noisy(f.path):
-                content_preview = (f.content or "")[:2000]
                 results.append({
                     "file_id": str(f.id),
                     "file_path": f.path,
-                    "snippet": f"ENTRYPOINT/MANIFEST: {f.path}\n{content_preview}",
+                    "snippet": f"ENTRYPOINT CODE ({f.path}):\n{(f.content or '')[:1500]}",
                     "score": 0.92,
                     "match_type": "entrypoint",
                 })
 
-        # ── Tier 4: Top-level source structure (first 15 symbols to understand scope)
-        if len(results) < 5:
-            top_symbols = list(self.db.scalars(
-                select(Symbol).where(
-                    Symbol.repository_id == repository.id,
-                    Symbol.symbol_type.in_(["class", "function", "module"]),
-                ).order_by(Symbol.start_line).limit(15)
-            ).all())
-            if top_symbols:
-                sym_lines = []
-                for s in top_symbols:
-                    f_rec = self.db.get(File, s.file_id)
-                    fp = f_rec.path if f_rec else "unknown"
-                    if not _is_noisy(fp):
-                        sym_lines.append(f"  {s.symbol_type} '{s.name}' in {fp}:{s.start_line}")
-                if sym_lines:
-                    results.append({
-                        "file_path": "REPO_SYMBOLS",
-                        "snippet": "TOP-LEVEL SYMBOLS:\n" + "\n".join(sym_lines[:12]),
-                        "score": 0.80,
-                        "match_type": "symbol_overview",
-                    })
-
-        # ── Build a quick file-extension language census
-        all_files = list(self.db.scalars(
-            select(File).where(File.repository_id == repository.id).limit(200)
-        ).all())
-        ext_counts: dict[str, int] = {}
-        entrypoint_names: list[str] = []
-        for f in all_files:
-            if _is_noisy(f.path):
-                continue
-            ext = f.path.rsplit(".", 1)[-1].lower() if "." in f.path else "other"
-            ext_counts[ext] = ext_counts.get(ext, 0) + 1
-            fname = f.path.split("/")[-1].lower()
-            if fname in {"main.py", "app.py", "index.js", "server.js", "main.java",
-                         "application.java", "main.tsx", "index.ts", "manage.py"}:
-                entrypoint_names.append(f.path)
-
-        if ext_counts:
-            top_exts = sorted(ext_counts.items(), key=lambda x: -x[1])[:5]
-            lang_line = ", ".join(f".{ext}({count}" + " files)" for ext, count in top_exts)
-            ep_line = ", ".join(entrypoint_names[:5]) if entrypoint_names else "none detected"
-            results.insert(
-                1 if results else 0,
-                {
-                    "file_path": "REPO_STRUCTURE",
-                    "snippet": (
-                        f"FILE STRUCTURE CENSUS:\n"
-                        f"  Total files indexed: {len(all_files)}\n"
-                        f"  File types: {lang_line}\n"
-                        f"  Detected entrypoints: {ep_line}"
-                    ),
-                    "score": 0.95,
-                    "match_type": "structure_census",
-                }
-            )
+        return results
 
         return results
 

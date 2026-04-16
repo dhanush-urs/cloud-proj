@@ -1,7 +1,8 @@
 .PHONY: up down logs restart api-shell api-worker-shell postgres-shell neo4j-shell web-shell
 
 up:
-	docker compose -f infra/compose/docker-compose.dev.yml up -d --build
+	docker compose -f infra/compose/docker-compose.dev.yml up -d --build && \
+	(echo "" && echo "BUILD STATUS: SUCCESS" && echo "OPEN NOW:" && echo "http://localhost:3000")
 
 down:
 	docker compose -f infra/compose/docker-compose.dev.yml down
@@ -11,7 +12,7 @@ logs:
 
 restart:
 	docker compose -f infra/compose/docker-compose.dev.yml down -v
-	docker compose -f infra/compose/docker-compose.dev.yml up -d --build
+	$(MAKE) up
 
 api-shell:
 	docker compose -f infra/compose/docker-compose.dev.yml exec api bash

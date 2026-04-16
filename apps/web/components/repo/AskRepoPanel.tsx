@@ -9,6 +9,7 @@ type Props = {
 function cleanMarkdown(text: string) {
   if (!text) return "";
   return text
+    .replace(/^[=\-]{3,}$/gm, "") // Remove separator lines like ==== or ----
     .replace(/\*\*/g, "") // bold
     .replace(/__/g, "") // italic/bold
     .replace(/`/g, "") // inline code
@@ -57,36 +58,18 @@ export function AskRepoPanel({ result }: Props) {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
       {/* Meta Header */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-slate-300">
-          Intent: {result.query_type || "General Search"}
+        <span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+          Analysis Meta
         </span>
-        <span className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-slate-300">
-          Mode: {result.mode}
-        </span>
-        {result.mode === "gemini_synthesized" && (
-          <span className="flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-blue-400">
-             <span className="relative flex h-2 w-2">
-               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-               <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-             </span>
-             Gemini Engine
-          </span>
-        )}
-        {result.mode === "deterministic_fallback" && (
-          <span className="flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-amber-500">
-             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-             </svg>
-             Deterministic Fallback
-          </span>
-        )}
         {result.confidence && (
           <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
             result.confidence === 'high' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' :
             result.confidence === 'medium' ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400' :
             'border-rose-500/30 bg-rose-500/10 text-rose-400'
           }`}>
-            Confidence: {result.confidence}
+            {result.confidence === 'high' ? 'High Confidence' : 
+             result.confidence === 'medium' ? 'Medium Confidence' : 
+             'Low Confidence'}
           </span>
         )}
       </div>
@@ -142,13 +125,13 @@ export function AskRepoPanel({ result }: Props) {
                         {sec.title}
                       </h4>
                     )}
-                    <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
+                    <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-line prose prose-invert max-w-none">
                       {sec.body}
                     </div>
                   </div>
                 ))
               ) : (
-                <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
+                <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-line prose prose-invert max-w-none">
                   {cleanMarkdown(rawAnswer)}
                 </div>
               )}

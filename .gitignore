@@ -41,3 +41,4 @@ apps/web/package-lock.json
 apps/web/pnpm-lock.yaml
 apps/web/tsconfig.tsbuildinfo
 apps/api/alembic 2.ini
+apps/api/data/

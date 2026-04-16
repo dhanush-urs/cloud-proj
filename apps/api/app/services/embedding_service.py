@@ -150,107 +150,124 @@ class EmbeddingService:
         top_k: int = 8,
     ) -> list[dict]:
         """
-        Hybrid retrieval for semantic search UI:
-        - semantic embeddings (if chunks exist)
-        - keyword match over chunk content
-        - path match over file paths (boost)
-        Deduplicates by chunk_id / file+line.
+        Generalized Hybrid Search for ANY repository:
+        1. Query Mode Detection (Code vs Natural Language)
+        2. Exact Substring Match (Case-sensitive & Insensitive)
+        3. Path Matches (Filename priority)
+        4. Semantic Matches (Vector fallback)
+        5. Noise Filtering (Exclude lockfiles & vendor)
+        6. Compact Snippets (Centered on match)
         """
-        semantic = []
-        try:
-            semantic = self.semantic_search(repository_id, query, top_k=top_k)
-            for r in semantic:
-                r["match_type"] = "semantic"
-        except Exception as e:
-            print(f"semantic_search failed in hybrid_search: {e}")
+        # --- 1. Query Mode Detection ---
+        # Detect if it looks like code (dots, slashes, underscores, backticks, camelCase)
+        is_code_query = any(c in query for c in {".", "/", "_", "(", ")", ":", "{"}) or \
+                        any(word[0].islower() and any(c.isupper() for c in word[1:]) for word in query.split())
+        
+        # --- 2. Noise Filtering Patterns ---
+        NOISE_PATTERNS = [
+            "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "vendor/", 
+            "node_modules/", ".min.js", ".map", "dist/", "build/", ".next/"
+        ]
 
-        # Keyword search (fast, deterministic)
-        tokens = [t.strip("?.,!:;'\"`").lower() for t in query.split() if len(t) >= 3]
-        kw = tokens[:4]
-        keyword_rows: list[dict] = []
-        if kw:
-            conditions = [EmbeddingChunk.content.ilike(f"%{t}%") for t in kw]
-            rows = list(
-                self.db.execute(
-                    select(EmbeddingChunk, File.path)
-                    .outerjoin(File, File.id == EmbeddingChunk.file_id)
-                    .where(EmbeddingChunk.repository_id == repository_id, or_(*conditions))
-                    .limit(top_k)
-                ).all()
-            )
-            for chunk_row, file_path in rows:
-                keyword_rows.append(
-                    {
-                        "chunk_id": chunk_row.id,
-                        "file_id": chunk_row.file_id,
-                        "file_path": file_path,
-                        "score": 0.7,
-                        "chunk_type": chunk_row.chunk_type,
-                        "start_line": chunk_row.start_line,
-                        "end_line": chunk_row.end_line,
-                        "snippet": chunk_row.content[:1000],
-                        "match_type": "keyword",
-                    }
-                )
+        def _is_noisy(path: str) -> bool:
+            if not path: return False
+            p = path.lower()
+            return any(n in p for n in NOISE_PATTERNS)
 
-        # File-level keyword search fallback (works even before /embed builds chunks)
-        file_keyword_rows: list[dict] = []
-        if kw:
-            fconds = [File.content.ilike(f"%{t}%") for t in kw]
-            files = list(
-                self.db.scalars(
+        # --- 3. Exact Substring Search (Highest Priority) ---
+        exact_results = []
+        if len(query) >= 3:
+            # Case-sensitive exact match in File content
+            exact_files = list(self.db.scalars(
+                select(File).where(
+                    File.repository_id == repository_id,
+                    File.content.contains(query)
+                ).limit(5)
+            ).all())
+            
+            for f in exact_files:
+                if _is_noisy(f.path): continue
+                snippet, start, end = self._get_compact_snippet(f.content or "", query)
+                exact_results.append({
+                    "chunk_id": f"exact:{f.id}:{start}",
+                    "file_id": f.id,
+                    "file_path": f.path,
+                    "score": 1.0,
+                    "chunk_type": "exact_match",
+                    "start_line": start,
+                    "end_line": end,
+                    "snippet": snippet,
+                    "match_type": "exact",
+                })
+
+            # Case-insensitive if no exact sensitive matches or if it's a code query
+            if not exact_results or is_code_query:
+                ci_files = list(self.db.scalars(
                     select(File).where(
                         File.repository_id == repository_id,
-                        File.content.is_not(None),
-                        or_(*fconds),
-                    ).limit(10)
-                ).all()
-            )
-            for f in files:
-                snippet = (f.content or "")[:1000]
-                file_keyword_rows.append(
-                    {
-                        "chunk_id": f"filecontent:{f.id}",
-                        "file_id": f.id,
-                        "file_path": f.path,
-                        "score": 0.75,
-                        "chunk_type": "file_content",
-                        "start_line": 1,
-                        "end_line": min((f.line_count or 1), 200),
-                        "snippet": snippet,
-                        "match_type": "keyword",
-                    }
-                )
-
-        # Path matches (if query looks like a filename/path)
-        path_rows: list[dict] = []
-        candidates = [t for t in tokens if "/" in t or "." in t]
-        if candidates:
-            conds = [File.path.ilike(f"%{c}%") for c in candidates[:3]]
-            files = list(
-                self.db.scalars(
-                    select(File).where(File.repository_id == repository_id, or_(*conds)).limit(5)
-                ).all()
-            )
-            for f in files:
-                path_rows.append(
-                    {
-                        "chunk_id": f"file:{f.id}",
+                        File.content.ilike(f"%{query}%")
+                    ).limit(5)
+                ).all())
+                for f in ci_files:
+                    if _is_noisy(f.path) or any(r["file_id"] == f.id for r in exact_results):
+                        continue
+                    snippet, start, end = self._get_compact_snippet(f.content or "", query, case_sensitive=False)
+                    exact_results.append({
+                        "chunk_id": f"exact_ci:{f.id}:{start}",
                         "file_id": f.id,
                         "file_path": f.path,
                         "score": 0.95,
-                        "chunk_type": "file_path",
-                        "start_line": 1,
-                        "end_line": min((f.line_count or 1), 200),
-                        "snippet": (f.content or "")[:1000],
-                        "match_type": "path",
-                    }
-                )
+                        "chunk_type": "exact_match_ci",
+                        "start_line": start,
+                        "end_line": end,
+                        "snippet": snippet,
+                        "match_type": "exact_ci",
+                    })
 
+        # --- 4. Semantic Search ---
+        semantic = []
+        try:
+            semantic = self.semantic_search(repository_id, query, top_k=top_k)
+            filtered_semantic = []
+            for r in semantic:
+                if _is_noisy(r.get("file_path")): 
+                    continue # Drop noisy semantic matches
+                r["match_type"] = "semantic"
+                filtered_semantic.append(r)
+            semantic = filtered_semantic
+        except Exception as e:
+            print(f"semantic_search failed in hybrid_search: {e}")
+
+        # --- 5. Path matches ---
+        path_rows = []
+        tokens = [t.strip("?.,!:;'\"`").lower() for t in query.split() if len(t) >= 3]
+        candidates = [t for t in tokens if "/" in t or "." in t or len(t) > 5]
+        if candidates:
+            conds = [File.path.ilike(f"%{c}%") for c in candidates[:3]]
+            files = list(self.db.scalars(
+                select(File).where(File.repository_id == repository_id, or_(*conds)).limit(5)
+            ).all())
+            for f in files:
+                if _is_noisy(f.path): continue
+                path_rows.append({
+                    "chunk_id": f"path:{f.id}",
+                    "file_id": f.id,
+                    "file_path": f.path,
+                    "score": 0.9,
+                    "chunk_type": "file_path",
+                    "start_line": 1,
+                    "end_line": min((f.line_count or 20), 20),
+                    "snippet": (f.content or "")[:1000],
+                    "match_type": "path",
+                })
+
+        # --- 6. Merge & Deduplicate ---
         merged = []
         seen_chunk: set[str] = set()
         seen_loc: set[str] = set()
-        for r in path_rows + semantic + keyword_rows + file_keyword_rows:
+        
+        # Priority: Exact > Path > Semantic
+        for r in exact_results + path_rows + semantic:
             cid = str(r.get("chunk_id"))
             loc = f"{r.get('file_path')}:{r.get('start_line')}"
             if cid in seen_chunk or loc in seen_loc:
@@ -261,6 +278,31 @@ class EmbeddingService:
 
         merged.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return merged[:top_k]
+
+    def _get_compact_snippet(self, content: str, query: str, context_lines: int = 7, case_sensitive: bool = True) -> tuple[str, int, int]:
+        """Extracts a compact snippet (max ~15 lines) centered on the first match of query."""
+        if not content:
+            return "", 1, 1
+        
+        lines = content.splitlines()
+        match_line_idx = -1
+        
+        query_to_find = query if case_sensitive else query.lower()
+        
+        for i, line in enumerate(lines):
+            line_to_check = line if case_sensitive else line.lower()
+            if query_to_find in line_to_check:
+                match_line_idx = i
+                break
+        
+        if match_line_idx == -1:
+            return "\n".join(lines[:15]), 1, min(15, len(lines))
+            
+        start = max(0, match_line_idx - context_lines)
+        end = min(len(lines), match_line_idx + context_lines + 1)
+        
+        snippet = "\n".join(lines[start:end])
+        return snippet, start + 1, end
 
     def ask_repo(
         self,

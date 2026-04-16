@@ -14,6 +14,17 @@ export function AskRepoForm({ repoId }: Props) {
   const [result, setResult] = useState<AskRepoResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  function cleanAnswer(text: string) {
+    if (!text) return "";
+    return text
+      .replace(/^[=\-]{3,}$/gm, "") // Remove separator lines like ==== or ----
+      .replace(/#{1,6}\s/g, "") // Remove all markdown headers
+      .replace(/\*\*/g, "") // bold
+      .replace(/__/g, "") // italic/bold
+      .replace(/`/g, "") // inline code
+      .trim();
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
@@ -62,12 +73,15 @@ export function AskRepoForm({ repoId }: Props) {
       {result ? (
         <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="flex flex-wrap gap-2">
-            <span className="rounded-full border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300">
-              mode: {result.mode}
-            </span>
             {result.confidence ? (
-              <span className="rounded-full border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300">
-                confidence: {result.confidence}
+              <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
+                result.confidence === 'high' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' :
+                result.confidence === 'medium' ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400' :
+                'border-rose-500/30 bg-rose-500/10 text-rose-400'
+              }`}>
+                {result.confidence === 'high' ? 'High Confidence' : 
+                 result.confidence === 'medium' ? 'Medium Confidence' : 
+                 'Low Confidence'}
               </span>
             ) : null}
             {result.resolved_file ? (
@@ -83,11 +97,10 @@ export function AskRepoForm({ repoId }: Props) {
             <RenameImpactCard ra={result.rename_analysis} />
           ) : null}
 
-          <div>
-            <h3 className="mb-2 text-lg font-semibold text-white">Answer</h3>
-            {/* Render answer as clean line-split paragraphs — no raw markdown */}
-            <div className="rounded-lg bg-slate-950 p-4 text-sm text-slate-200 space-y-1 leading-relaxed whitespace-pre-wrap font-mono">
-              {result.answer}
+          <div className="pt-2">
+            <h3 className="mb-3 text-lg font-semibold text-slate-100">Analysis</h3>
+            <div className="text-sm text-slate-300 leading-relaxed prose prose-invert max-w-none selection:bg-blue-500/30">
+              {cleanAnswer(result.answer)}
             </div>
           </div>
 

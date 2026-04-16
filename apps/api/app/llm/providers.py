@@ -148,13 +148,14 @@ def get_embedding_provider() -> EmbeddingProvider:
         try:
             return GeminiEmbeddingProvider()
         except Exception as e:
-            print(f"[WARN] Failed to init GeminiEmbeddingProvider, falling back to Local SentenceTransformer: {e}")
+            print(f"[WARN] Failed to init GeminiEmbeddingProvider, falling back to SentenceTransformer: {e}")
 
     # Priority 2: SentenceTransformer (Local High-Quality)
     try:
         return SentenceTransformerEmbeddingProvider()
     except Exception as e:
-        print(f"[WARN] Failed to init SentenceTransformerEmbeddingProvider, falling back to Hashing: {e}")
+        print(f"[WARN] Embeddings degraded: sentence-transformers not installed or failed to load. Falling back to hashing-based vectorizer. This is intended for demo stability.")
+        print(f"[DEBUG] SentenceTransformer init error: {e}")
 
     # Priority 3: Hashing (Fallback of fallbacks)
     return LocalEmbeddingProvider()
