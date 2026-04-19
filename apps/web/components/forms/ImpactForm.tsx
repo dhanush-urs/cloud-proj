@@ -74,18 +74,22 @@ export function ImpactForm({ repoId }: Props) {
               Impacted Files
             </h3>
             <div className="space-y-2">
-              {result.impacted_files.map((file) => (
-                <div
-                  key={file.file_id}
-                  className="rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm"
-                >
-                  <div className="font-medium text-slate-200">{file.path}</div>
-                  <div className="text-slate-400">
-                    depth={file.depth} | risk={file.risk_score} | impact=
-                    {file.impact_score}
+              {Array.isArray(result.impacted_files) && result.impacted_files.length > 0 ? (
+                result.impacted_files.map((file) => (
+                  <div
+                    key={file.file_id}
+                    className="rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm"
+                  >
+                    <div className="font-medium text-slate-200">{file.path || "unknown file"}</div>
+                    <div className="text-slate-400">
+                      depth={file.depth ?? 0} | risk={file.risk_score ?? 0} | impact=
+                      {file.impact_score ?? 0}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-sm text-slate-500 italic">No significantly impacted files detected.</p>
+              )}
             </div>
           </div>
 
@@ -94,17 +98,21 @@ export function ImpactForm({ repoId }: Props) {
               Reviewer Hints
             </h3>
             <div className="space-y-2">
-              {result.reviewer_suggestions.map((r, idx) => (
-                <div
-                  key={`${r.reviewer_hint}-${idx}`}
-                  className="rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm"
-                >
-                  <div className="font-medium text-slate-200">
-                    {r.reviewer_hint}
+              {Array.isArray(result.reviewer_suggestions) && result.reviewer_suggestions.length > 0 ? (
+                result.reviewer_suggestions.map((r, idx) => (
+                  <div
+                    key={`${r.reviewer_hint}-${idx}`}
+                    className="rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm"
+                  >
+                    <div className="font-medium text-slate-200">
+                      {r.reviewer_hint || "General Hint"}
+                    </div>
+                    <div className="text-slate-400">{r.reason || "No reasoning provided."}</div>
                   </div>
-                  <div className="text-slate-400">{r.reason}</div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-sm text-slate-500 italic">No specific reviewer suggestions available.</p>
+              )}
             </div>
           </div>
         </div>

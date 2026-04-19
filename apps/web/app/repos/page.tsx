@@ -6,12 +6,13 @@ export const dynamic = "force-dynamic";
 
 export default async function ReposPage() {
   let repos: Repository[] = [];
+  let error: string | null = null;
 
   try {
-    const fetched = await getRepositories();
-    repos = Array.isArray(fetched) ? fetched : [];
-  } catch {
-    repos = [];
+    repos = await getRepositories();
+  } catch (err) {
+    console.error("Failed to load repositories:", err);
+    error = "Failed to load repositories. Please try again later.";
   }
 
   return (
@@ -26,13 +27,19 @@ export default async function ReposPage() {
         </Link>
       </div>
 
+      {error && (
+        <div className="rounded-xl bg-red-500/10 border border-red-500/30 p-4 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
       {(!repos || repos.length === 0) ? (
         <div className="rounded-xl border border-dashed border-slate-700 p-8 text-center text-slate-400">
           No repositories found yet.
         </div>
       ) : (
         <div className="grid gap-4">
-          {Array.isArray(repos) && repos.map((repo) => (
+          {repos.map((repo) => (
             <Link
               key={repo.id}
               href={`/repos/${repo.id}`}
@@ -41,15 +48,15 @@ export default async function ReposPage() {
               <div className="flex items-start justify-between sm:items-center">
                 <div className="space-y-1">
                   <div className="text-xl font-semibold text-white group-hover:text-blue-400">
-                    {repo.repo_url}
+                    {repo.repo_url || "Unnamed Repository"}
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-400">
                     <span>
-                      Branch: <span className="text-slate-300">{repo.default_branch}</span>
+                      Branch: <span className="text-slate-300">{repo.default_branch || "main"}</span>
                     </span>
                     <span className="text-slate-700">•</span>
                     <span>
-                      Status: <span className="text-slate-300">{repo.status}</span>
+                      Status: <span className="text-slate-300 capitalize">{repo.status || "unknown"}</span>
                     </span>
                   </div>
                 </div>
@@ -64,7 +71,7 @@ export default async function ReposPage() {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={2}
-                      d="9 5l7 7-7 7"
+                      d="M9 5l7 7-7 7"
                     />
                   </svg>
                 </div>

@@ -42,12 +42,12 @@ export default async function RepoOnboardingPage({ params }: Props) {
       ) : (
         <Card>
           <div className="mb-6 flex flex-wrap gap-2 text-xs text-slate-400">
-            <span>version: {doc.version}</span>
-            <span>mode: {doc.generation_mode}</span>
+            <span>version: {doc.version || "1.0.0"}</span>
+            <span>mode: {doc.generation_mode || "standard"}</span>
             {doc.llm_model ? <span>model: {doc.llm_model}</span> : null}
           </div>
 
-          <MarkdownView content={doc.content_markdown} />
+          <MarkdownView content={doc.content_markdown || "No content generated."} />
         </Card>
       )}
     </div>

@@ -44,8 +44,11 @@ export type SearchResultItem = {
   chunk_type: string;
   start_line?: number | null;
   end_line?: number | null;
+  matched_lines?: number[];
   snippet: string;
+  match_type?: string | null;
 };
+
 
 export type SemanticSearchResponse = {
   repository_id: string;
@@ -73,8 +76,11 @@ export type AskRepoResponse = {
     file_path?: string | null;
     start_line?: number | null;
     end_line?: number | null;
+    matched_lines?: number[];
     chunk_id: string;
+    match_type?: string | null;
   }>;
+
   mode: string;
   llm_model?: string | null;
   confidence?: string | null;
@@ -82,7 +88,12 @@ export type AskRepoResponse = {
   resolved_file?: string | null;
   resolved_line_number?: number | null;
   matched_line?: string | null;
+  enclosing_scope?: string | null;
+  line_type?: string | null;
   rename_analysis?: RenameAnalysis | null;
+  answer_mode?: string | null;
+  notes?: string[] | null;
+  snippet_found?: boolean | null;
 };
 
 export type HotspotItem = {
@@ -144,6 +155,7 @@ export type PRImpactResponse = {
 export type RefreshJob = {
   id: string;
   repository_id: string;
+  job_type: string;
   trigger_source: string;
   event_type: string;
   branch?: string | null;

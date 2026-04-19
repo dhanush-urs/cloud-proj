@@ -23,9 +23,9 @@ def parse_repository_semantics(repository_id: str, job_id: str) -> dict:
             return {"status": "error", "message": "Repository or job not found"}
 
         job.status = "running"
-        job.started_at = utc_now()
         job.message = "Repository ingestion & parsing started"
         repository.status = "parsing"
+        job.started_at = utc_now()
         db.commit()
 
         # Step 1: Ingest (Clone, Detect, Persist Text Files)
@@ -64,7 +64,6 @@ def parse_repository_semantics(repository_id: str, job_id: str) -> dict:
         logger.info(f"Enrichment result: {enrich_result.get('status')}")
 
         repository.status = "parsed"
-
         job.status = "completed"
         job.completed_at = utc_now()
         job.message = (
@@ -97,9 +96,9 @@ def parse_repository_semantics(repository_id: str, job_id: str) -> dict:
 
         if job:
             job.status = "failed"
+            job.message = f"Semantic parsing failed: {error_msg}"
             job.error_details = traceback.format_exc()
             job.completed_at = utc_now()
-            job.message = f"Semantic parsing failed: {error_msg}"
 
         if repository:
             repository.status = "failed"

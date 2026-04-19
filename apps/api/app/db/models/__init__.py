@@ -10,6 +10,7 @@ from app.db.models.pr_analysis import PRAnalysis
 from app.db.models.repo_job import RepoJob
 from app.db.models.repo_snapshot import RepoSnapshot
 from app.db.models.repository import Repository
+from app.db.models.repo_intelligence import RepoIntelligence
 from app.db.models.repository_refresh_job import RepositoryRefreshJob
 from app.db.models.risk_metric import RiskMetric
 from app.db.models.symbol import Symbol

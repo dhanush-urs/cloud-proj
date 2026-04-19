@@ -26,7 +26,9 @@ export function RefreshJobDetail({ initialJob }: Props) {
     const intervalId = setInterval(async () => {
       try {
         const latest = await getRefreshJob(job.id);
-        setJob(latest);
+        if (latest) {
+          setJob(latest);
+        }
       } catch {
         // ignore polling failures
       }

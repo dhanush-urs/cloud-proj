@@ -1,165 +1,224 @@
 import json
+import re
 from pathlib import Path
-from typing import Dict, Set
 
 # Framework detection rules
-# Sources: README mention, Direct Dependency (manifest), Entrypoint existence.
-# Score thresholds: >= 3 to report.
+# Requires (Manifest Dependency) AND (Usage Signal).
 FRAMEWORK_RULES = {
     "FastAPI": {
-        "manifests": ["requirements.txt", "pyproject.toml", "Pipfile"],
-        "entrypoints": ["main.py", "app.py", "asgi.py"],
-        "deps": ["fastapi"],
+        "deps": ["fastapi", "pydantic", "starlette"],
+        "patterns": [r"from fastapi import", r"import fastapi", r"FastAPI\("],
+        "files": ["main.py", "app.py", "asgi.py", "router.py"]
     },
     "Django": {
-        "manifests": ["requirements.txt", "pyproject.toml"],
-        "entrypoints": ["manage.py", "wsgi.py", "asgi.py"],
         "deps": ["django"],
+        "patterns": [r"from django", r"import django"],
+        "files": ["manage.py", "settings.py", "wsgi.py"]
     },
     "Flask": {
-        "manifests": ["requirements.txt", "pyproject.toml"],
-        "entrypoints": ["app.py", "wsgi.py"],
         "deps": ["flask"],
+        "patterns": [r"from flask import Flask", r"import flask", r"Flask\("],
+        "files": ["app.py", "wsgi.py"]
     },
     "Next.js": {
-        "manifests": ["package.json"],
-        "entrypoints": ["next.config.js", "next.config.ts", "next.config.mjs"],
-        "deps": ["next"],
+        "deps": ["next", "react-dom"],
+        "files": ["next.config.js", "next.config.ts", "next.config.mjs", "app/layout.tsx", "pages/_app.tsx", "tailwind.config.ts"],
+        "patterns": [r"from 'next/", r"from \"next/", r"export default nextConfig"]
     },
     "React": {
-        "manifests": ["package.json"],
-        "entrypoints": ["App.tsx", "App.jsx", "main.tsx", "main.jsx"],
         "deps": ["react"],
+        "patterns": [r"import React", r"from 'react'", r'from "react"', r"import {.*} from 'react'"],
+        "extensions": [".tsx", ".jsx"]
     },
-    "Express": {
-        "manifests": ["package.json"],
-        "entrypoints": ["app.js", "server.js", "index.js"],
-        "deps": ["express"],
+    "Vue": {
+        "deps": ["vue"],
+        "extensions": [".vue"],
+        "patterns": [r"from 'vue'", r"from \"vue\""]
     },
-    "NestJS": {
-        "manifests": ["package.json"],
-        "entrypoints": ["main.ts"],
-        "deps": ["@nestjs/core"],
+    "Svelte": {
+        "deps": ["svelte"],
+        "extensions": [".svelte"]
+    },
+    "Astro": {
+        "deps": ["astro"],
+        "extensions": [".astro"],
+        "files": ["astro.config.mjs", "astro.config.ts"]
+    },
+    "Tailwind CSS": {
+        "deps": ["tailwindcss"],
+        "files": ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs"],
+        "patterns": [r"@tailwind base", r"@tailwind components", r"@tailwind utilities"]
     },
     "Spring Boot": {
-        "manifests": ["pom.xml", "build.gradle", "build.gradle.kts"],
-        "entrypoints": ["Application.java", "Application.kt"],
         "deps": ["spring-boot-starter"],
+        "patterns": [r"@SpringBootApplication", r"import org\.springframework"],
+        "extensions": [".java", ".kt"]
     },
-    "Go Modules": {
-        "manifests": ["go.mod"],
-        "entrypoints": ["main.go"],
-        "deps": [],
+    "Electron": {
+        "deps": ["electron"],
+        "patterns": [r"BrowserWindow\(", r"app\.on\("]
     },
-    "Rust Cargo": {
-        "manifests": ["Cargo.toml"],
-        "entrypoints": ["main.rs", "lib.rs"],
-        "deps": [],
+    "Celery": {
+        "deps": ["celery"],
+        "patterns": [r"Celery\(", r"@.*\.task", r"CELERY_BROKER", r"celery_app"],
+        "files": ["celery.py", "celery_app.py", "tasks.py"]
+    },
+    "Redis": {
+        "deps": ["redis", "ioredis"],
+        "patterns": [r"Redis\(", r"redis\.", r"REDIS_URL"]
+    },
+    "Postgres": {
+        "deps": ["psycopg2", "asyncpg", "pg", "sequelize", "typeorm"],
+        "patterns": [r"postgresql://", r"postgres://", r"PostgreSQL"]
+    },
+    "Neo4j": {
+        "deps": ["neo4j", "neo4j-driver"],
+        "patterns": [r"bolt://", r"neo4j://", r"neo4j\."]
     },
 }
 
-def _scan_files(repo_root: Path) -> Set[Path]:
-    """Scan top-level and 1st-level subdirs for relevant files efficiently."""
-    files = set()
-    ignored = {"node_modules", "vendor", "dist", "build", ".next", ".git", "__pycache__", "venv", ".venv"}
-    
-    if not repo_root.exists():
-        return files
+# Frameworks that qualify with EITHER dependency OR usage (Infra/DB)
+INFRA_FRAMEWORKS = {"Postgres", "Redis", "Neo4j", "Celery", "Docker", "Kubernetes"}
 
-    # Top level
-    for p in repo_root.iterdir():
-        if p.is_file():
-            files.add(p)
-        elif p.is_dir() and p.name not in ignored:
-            # 1st level subdirs
-            try:
-                for sub_p in p.iterdir():
-                    if sub_p.is_file():
-                        files.add(sub_p)
-            except (PermissionError, Exception):
-                continue
-    return files
+def _scan_files(repo_root: Path) -> list[Path]:
+    """Gather up to 3 levels of files for analysis (supports monorepos)."""
+    found = []
+    ignored = {"node_modules", ".git", "venv", ".venv", "dist", "build", ".next", "__pycache__"}
+    if not repo_root.exists():
+        return found
+    
+    def _walk(current_path: Path, depth: int):
+        if depth > 5:
+            return
+        try:
+            for p in current_path.iterdir():
+                if p.name in ignored:
+                    continue
+                if p.is_file():
+                    found.append(p)
+                elif p.is_dir():
+                    _walk(p, depth + 1)
+        except:
+            pass
+
+    _walk(repo_root, 1)
+    return found
 
 def detect_frameworks(repo_root: Path) -> list[str]:
     """
-    Detects frameworks with an evidence-based scoring hierarchy.
-    Threshold: score >= 3 is reported.
-    README (+3), Entrypoint (+3), Direct Dependency (+2).
+    Detects frameworks with strict evidence thresholds.
+    Ensures that a framework is only reported if it's actually used, not just mentioned.
     """
-    scores: Dict[str, int] = {f: 0 for f in FRAMEWORK_RULES}
+    detected = set()
     
     try:
         all_files = _scan_files(repo_root)
     except Exception:
         return []
-    
-    file_names = {p.name for p in all_files}
-    
-    # 1. README check (+3) - Very strong signal
-    readme = next((p for p in all_files if p.name.lower() == "readme.md"), None)
-    if readme:
-        try:
-            content = readme.read_text(encoding="utf-8", errors="ignore").lower()
-            for framework in FRAMEWORK_RULES:
-                if framework.lower() in content:
-                    scores[framework] += 3
-        except Exception:
-            pass
-
-    # 2. Entrypoint check (+3) - Concrete evidence of runtime
-    for framework, rules in FRAMEWORK_RULES.items():
-        for ep in rules["entrypoints"]:
-            if ep in file_names:
-                scores[framework] += 3
-                break
-
-    # 3. Manifest / Dependency check (+2) - Medium signal
-    package_json_path = repo_root / "package.json"
-    if package_json_path.exists():
-        try:
-            with open(package_json_path, "r") as f:
-                data = json.load(f)
-                deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
-                for framework, rules in FRAMEWORK_RULES.items():
-                    if any(d in deps for d in rules["deps"]) and "package.json" in rules["manifests"]:
-                        scores[framework] += 2
-        except Exception:
-            pass
-
-    # Python Manifests
-    for py_man in ["requirements.txt", "pyproject.toml"]:
-        man_path = repo_root / py_man
-        if man_path.exists():
-            try:
-                content = man_path.read_text(encoding="utf-8", errors="ignore").lower()
-                for framework, rules in FRAMEWORK_RULES.items():
-                    if py_man in rules["manifests"]:
-                        if any(dep.lower() in content for dep in rules["deps"]):
-                            scores[framework] += 2
-            except Exception:
-                pass
-
-    # 4. Result Synthesis
-    detected = [f for f, score in scores.items() if score >= 3]
-    
-    # Special cases for Infra/Common tools
-    # Kubernetes Heuristic
-    is_k8s = False
-    for p in all_files:
-        if p.suffix.lower() in {".yaml", ".yml"}:
-            try:
-                content = p.read_text(encoding="utf-8", errors="ignore").lower()
-                # Check for Kubernetes-specific markers
-                if "apiversion:" in content and "kind:" in content:
-                    is_k8s = True
-                    break
-            except Exception:
-                continue
-    if is_k8s:
-        detected.append("Kubernetes")
         
-    # Docker Heuristic
-    if any(df in file_names for df in ["Dockerfile", "docker-compose.yml", "docker-compose.yaml"]):
-        detected.append("Docker")
+    file_names = {p.name for p in all_files}
+    extensions = {p.suffix.lower() for p in all_files}
+    
+    # 1. Gather Dependencies from All Discovered Manifests (Monorepo Support)
+    all_deps = set()
+    
+    # Manifest patterns to check
+    manifest_files = [f for f in all_files if f.name in {
+        "package.json", "requirements.txt", "pyproject.toml", "Pipfile",
+        "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts"
+    }]
+    
+    for manifest_path in manifest_files:
+        filename = manifest_path.name
+        try:
+            content = manifest_path.read_text(errors="ignore")
+            
+            if filename == "package.json":
+                try:
+                    data = json.loads(content)
+                    deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+                    all_deps.update(deps.keys())
+                except: pass
+            
+            else:
+                # Text-based manifests (requirements.txt, pom.xml, gradle, go.mod, etc.)
+                content_lower = content.lower()
+                for framework_name, rule in FRAMEWORK_RULES.items():
+                    for d in rule.get("deps", []):
+                        if d.lower() in content_lower:
+                            all_deps.add(d)
+        except Exception as e:
+            logger.warning(f"Failed to scan manifest {manifest_path}: {e}")
 
-    return sorted(list(set(detected)))
+
+    # 2. Check each framework rule
+    for name, rule in FRAMEWORK_RULES.items():
+        # A framework must have a dependency in manifest...
+        has_dep = any(d in all_deps for d in rule.get("deps", []))
+        
+        # ...AND some form of usage evidence
+        has_usage = False
+        
+        # Evidence type A: Specialized file existence (e.g. manage.py, next.config.js)
+        if any(f in file_names for f in rule.get("files", [])):
+            has_usage = True
+        
+        # Evidence type B: Language/Extension direct binding (e.g. .vue, .tsx)
+        if not has_usage and any(ext in extensions for ext in rule.get("extensions", [])):
+            has_usage = True
+            
+        # Evidence type C: Code pattern scanning (imports, instantiation)
+        if not has_usage and "patterns" in rule:
+            compiled = [re.compile(p) for p in rule["patterns"]]
+            count = 0
+            for p in all_files:
+                # Only scan likely source files
+                if p.suffix in {".py", ".js", ".ts", ".tsx", ".jsx"} and p.stat().st_size < 100000:
+                    try:
+                        content = p.read_text(errors="ignore")
+                        if any(pat.search(content) for pat in compiled):
+                            has_usage = True
+                            break
+                    except: pass
+                    count += 1
+                    if count >= 15: break # Cap scan for performance
+
+        is_infra = name in INFRA_FRAMEWORKS
+        # Stricter infra check: must have dependency AND usage if it's infra
+        # Otherwise we get hallucinations from packages that are installed but unused (e.g. sequelize for a JSON-only app)
+        if (has_dep and has_usage):
+            detected.add(name)
+        elif is_infra and has_usage:
+            # If it's infra (Postgres/Redis), we can accept usage even skip dep (e.g. system db)
+            # but we MUST NOT accept dep-only (no usage) as that's usually a false positive.
+            detected.add(name)
+            
+    # 3. Infrastructure & Language Modules (Scan all discovered file names/paths)
+    all_rel_paths = {str(p.relative_to(repo_root)) for p in all_files}
+    all_filenames = {p.name for p in all_files}
+
+    if any(df in all_filenames for df in ["Dockerfile", "docker-compose.yml", "docker-compose.yaml"]):
+        detected.add("Docker")
+    if "go.mod" in all_filenames: detected.add("Go Modules")
+    if "Cargo.toml" in all_filenames: detected.add("Rust Cargo")
+    
+    # K8s detection via file content sampling
+    for f in all_files:
+        if f.suffix in {".yaml", ".yml"}:
+            try:
+                sample = f.read_text(errors="ignore")[:1000].lower()
+                if "apiversion:" in sample:
+                    detected.add("Kubernetes")
+                    break
+            except: pass
+
+    # 4. Result Synthesis & Static Fallback
+    # Filter out noisy or redundant infrastructure names if major frameworks are present
+    res = sorted(list(detected))
+    if not res:
+        # Check if it has web files to qualify as Static
+        if any(ext in extensions for ext in {".html", ".css", ".js"}):
+            return ["Static HTML/CSS/JavaScript"]
+        return []
+        
+    return res

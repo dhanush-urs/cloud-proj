@@ -29,8 +29,9 @@ def clone_repository(repo_url: str, repository_id: str, branch: str | None = Non
                 shutil.rmtree(target_path, ignore_errors=True)
                 target_path.mkdir(parents=True, exist_ok=True)
             # remove stale non-git content
-            import shutil
             for child in target_path.iterdir():
+                if child.name == ".git":
+                    continue
                 if child.is_file():
                     child.unlink()
                 else:

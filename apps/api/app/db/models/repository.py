@@ -40,3 +40,4 @@ class Repository(Base):
     files = relationship("File", back_populates="repository", cascade="all, delete-orphan")
     jobs = relationship("RepoJob", back_populates="repository", cascade="all, delete-orphan")
     snapshots = relationship("RepoSnapshot", back_populates="repository", cascade="all, delete-orphan")
+    intelligence = relationship("RepoIntelligence", back_populates="repository", uselist=False, cascade="all, delete-orphan")

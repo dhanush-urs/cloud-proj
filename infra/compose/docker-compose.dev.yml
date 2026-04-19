@@ -4,7 +4,7 @@ services:
       context: ../../apps/web
       dockerfile: Dockerfile
     container_name: repobrain-web
-    command: sh -c "CI=true pnpm install && pnpm dev"
+    command: pnpm dev
     ports:
       - "3000:3000"
     volumes:
@@ -13,7 +13,8 @@ services:
     environment:
       - NODE_ENV=development
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks:
       - repobrain-net
 
@@ -37,6 +38,12 @@ services:
         condition: service_started
       neo4j:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - repobrain-net
 
@@ -53,9 +60,12 @@ services:
     env_file:
       - ../../.env
     depends_on:
-      - api
-      - redis
-      - postgres
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     networks:
       - repobrain-net
 

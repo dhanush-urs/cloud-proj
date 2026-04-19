@@ -3,9 +3,14 @@ import { Repository } from "@/lib/types";
 import { Activity, CheckCircle2, Clock, Terminal, ShieldAlert } from "lucide-react";
 
 export function RepoStatusPanel({ repo }: { repo: Repository }) {
-  const isSyncing = repo.status === "indexing" || repo.status === "parsing" || repo.status === "pending";
+  const isSyncing = ["indexing", "parsing", "embedding", "pending", "queued", "running"].includes(repo.status || "");
   const isError = repo.status === "failed";
-  const isReady = repo.status === "ready" || repo.status === "success" || repo.status === "parsed" || repo.status === "indexed";
+  const isReady = ["ready", "success", "parsed", "indexed", "embedded"].includes(repo.status || "");
+
+  const sanitizeFramework = (val?: string | null) => {
+    if (!val) return "";
+    return val.replace(/[{}[\]"']/g, "").split(",").map(s => s.trim()).filter(Boolean).join(", ");
+  };
 
   return (
     <Card className="p-6 border-slate-800 bg-slate-900/40 backdrop-blur-sm">
@@ -33,11 +38,17 @@ export function RepoStatusPanel({ repo }: { repo: Repository }) {
           </div>
           
           <p className="text-sm text-slate-400 leading-relaxed max-w-2xl">
-            {isSyncing 
-              ? "The repository is currently being processed. Our ingestion pipeline is building a semantic graph of your codebase and preparing the AI reasoning engine."
+          {isSyncing 
+              ? "The repository is currently being processed. Our ingestion pipeline is building a semantic graph of your codebase."
               : isError
-              ? "An error occurred during the last synchronization attempt. Please check the logs below for specific failure details or retry the operation."
-              : "Intelligence system is fully operational. All code symbols, dependencies, and file structures are indexed and ready for grounded Q&A."}
+              ? "An error occurred during the last synchronization attempt. Please check the logs below or retry the operation."
+              : repo.status === "embedded"
+              ? "Repository is fully embedded and ready for semantic search and Ask Repo queries."
+              : repo.status === "indexed"
+              ? "Repository files are indexed. Click Embed Repository to enable semantic search."
+              : repo.status === "parsed"
+              ? "Repository is parsed and ready for embedding. Click Embed Repository to enable AI Q&A."
+              : "Intelligence system is fully operational. All code symbols, dependencies, and file structures are indexed."}
           </p>
           
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-4">
@@ -54,7 +65,7 @@ export function RepoStatusPanel({ repo }: { repo: Repository }) {
               <div>
                 <p className="text-[10px] uppercase text-slate-500 font-bold tracking-tight">Primary Tech</p>
                 <p className="text-sm text-slate-300 font-medium">
-                  {repo.primary_language || 'Generic'} {repo.framework ? `(${repo.framework})` : ''}
+                  {repo.primary_language || 'Generic'} {repo.framework ? `(${sanitizeFramework(repo.framework)})` : ''}
                 </p>
               </div>
             </div>

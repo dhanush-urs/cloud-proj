@@ -29,7 +29,7 @@ export default async function RepoFilesPage({ params }: Props) {
 
       <RepoSubnav repoId={repoId} />
 
-      {!data || data.items.length === 0 ? (
+      {!data || !Array.isArray(data.items) || data.items.length === 0 ? (
         <EmptyState
           title="No files available"
           description="Make sure the repository has been parsed before viewing files."

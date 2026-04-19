@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y \
     bash \
     && rm -rf /var/lib/apt/lists/*
 
+# Create a non-root user
+RUN groupadd -r repobrain && useradd -r -g repobrain repobrain
+
 COPY requirements.txt .
 COPY requirements-dev.txt .
 
@@ -19,7 +22,11 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 
 COPY . .
 
-RUN mkdir -p /app/data/repos /app/data/tmp
+# Ensure the data directories exist and are owned by the non-root user
+RUN mkdir -p /app/data/repos /app/data/tmp \
+    && chown -R repobrain:repobrain /app
+
+USER repobrain
 
 EXPOSE 8000
 

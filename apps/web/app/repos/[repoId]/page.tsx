@@ -7,6 +7,8 @@ import { RepoStatsCard } from "@/components/repo/RepoStatsCard";
 import { RepoSummaryGrid } from "@/components/repo/RepoSummaryGrid";
 import { getRepository } from "@/lib/api";
 
+import { notFound } from "next/navigation";
+
 type Props = {
   params: Promise<{ repoId: string }>;
 };
@@ -15,11 +17,24 @@ export const dynamic = "force-dynamic";
 
 export default async function RepoOverviewPage({ params }: Props) {
   const { repoId } = await params;
-  const repo = await getRepository(repoId);
+  
+  let repo = null;
+  try {
+    repo = await getRepository(repoId);
+  } catch (err) {
+    console.error(`[Page] Error loading repo ${repoId}:`, err);
+  }
+
+  if (!repo) {
+    return notFound();
+  }
 
   return (
     <div className="animate-in fade-in duration-700">
-      <PageHeader title="Repository Overview" subtitle={repo.repo_url} />
+      <PageHeader 
+        title="Repository Overview" 
+        subtitle={repo.repo_url || "Unknown Repository"} 
+      />
 
       <RepoSubnav repoId={repoId} />
 
@@ -38,7 +53,7 @@ export default async function RepoOverviewPage({ params }: Props) {
             <h2 className="mb-4 text-lg font-semibold text-white">
               Repository Actions
             </h2>
-            <RepoActions repoId={repoId} initialStatus={repo.status} />
+            <RepoActions repoId={repoId} initialStatus={repo.status || "unknown"} />
 
             <div className="mt-6 pt-6 border-t border-slate-800">
               <Link

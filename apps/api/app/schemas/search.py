@@ -23,7 +23,9 @@ class SearchResultItem(BaseModel):
     chunk_type: str
     start_line: int | None
     end_line: int | None
+    matched_lines: list[int] = []
     snippet: str
+    match_type: str | None = None
 
 
 class SearchResponse(BaseModel):

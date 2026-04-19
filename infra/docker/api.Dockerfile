@@ -23,13 +23,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Create a non-root user
+RUN groupadd -r repobrain && useradd -r -g repobrain repobrain
+
 COPY --from=builder /install /usr/local
 COPY apps/api .
+
+# Initialize data directories and set permissions
+RUN mkdir -p /app/data/repos /app/data/tmp \
+    && chown -R repobrain:repobrain /app
 
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV APP_ENV=production
 ENV PYTHONUNBUFFERED=1
+
+USER repobrain
 
 EXPOSE 8000
 

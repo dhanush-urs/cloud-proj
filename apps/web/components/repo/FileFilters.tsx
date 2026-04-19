@@ -22,10 +22,10 @@ export function FileFilters({ repoId, files }: Props) {
     return files.filter((file) => {
       const matchesQuery =
         !query ||
-        file.path.toLowerCase().includes(query.toLowerCase()) ||
+        (file.path || "").toLowerCase().includes(query.toLowerCase()) ||
         (file.language || "").toLowerCase().includes(query.toLowerCase());
 
-      const matchesKind = kind === "all" || file.file_kind === kind;
+      const matchesKind = kind === "all" || (file.file_kind || "file") === kind;
 
       return matchesQuery && matchesKind;
     });

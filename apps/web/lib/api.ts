@@ -1,4 +1,14 @@
 import { API_BASE_URL } from "@/lib/config";
+import {
+  normalizeRepository,
+  normalizeRepositories,
+  normalizeRefreshJob,
+  normalizeAskRepoResponse,
+  normalizeSearchResponse,
+  normalizeFileListResponse,
+  normalizeHotspotResponse,
+  normalizePRImpactResponse,
+} from "./normalizers";
 import type {
   AskRepoResponse,
   FileDetailResponse,
@@ -12,76 +22,94 @@ import type {
   SemanticSearchResponse,
 } from "@/lib/types";
 
-async function handleResponse<T>(response: Response): Promise<T> {
+/**
+ * Enhanced response handler with robustness and error logging.
+ */
+async function handleResponse<T>(
+  response: Response,
+  fallback: T
+): Promise<T> {
   if (!response.ok) {
-    let message = `Request failed with status ${response.status}`;
-    try {
-      const data = await response.json();
-      if (data?.detail) {
-        message = data.detail;
-      }
-    } catch {
-      // ignore
-    }
-    throw new Error(message);
+    console.error(`[API] ${response.url} failed: ${response.status}`);
+    return fallback;
   }
 
-  return response.json() as Promise<T>;
+  try {
+    return await response.json();
+  } catch (err) {
+    console.error(`[API] Failed to parse JSON from ${response.url}:`, err);
+    return fallback;
+  }
 }
 
-function normalizeRepositoriesResponse(data: any): Repository[] {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.items)) return data.items;
-  if (Array.isArray(data?.repositories)) return data.repositories;
-  if (Array.isArray(data?.data)) return data.data;
-
-  console.warn("[API] Unexpected repository list shape:", data);
-  return [];
+/**
+ * Centralized safe fetch wrapper to catch all network-level errors.
+ */
+async function safeFetch<T>(
+  endpoint: string,
+  options: RequestInit = {},
+  fallback: T
+): Promise<T> {
+  try {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const res = await fetch(url, {
+      ...options,
+      // Add a reasonable timeout for SSR stability
+      signal: AbortSignal.timeout(10000),
+    });
+    return await handleResponse(res, fallback);
+  } catch (err) {
+    console.error(`[API] Network error on ${endpoint}:`, (err as any).message);
+    return fallback;
+  }
 }
 
 export async function getRepositories(): Promise<Repository[]> {
-  const res = await fetch(`${API_BASE_URL}/repos`, { cache: "no-store" });
-  const data = await handleResponse<any>(res);
-  return normalizeRepositoriesResponse(data);
+  const data = await safeFetch("/repos", { cache: "no-store" }, []);
+  return normalizeRepositories(data);
 }
 
-export async function getJobs(repoId: string, limit = 1): Promise<{ items: any[]; total: number }> {
-  const res = await fetch(`${API_BASE_URL}/jobs?repo_id=${repoId}&limit=${limit}`, {
-    cache: "no-store",
-  });
-  return handleResponse(res);
+export async function getJobs(
+  repoId: string,
+  limit = 1
+): Promise<{ items: any[]; total: number }> {
+  return safeFetch(
+    `/jobs?repo_id=${repoId}&limit=${limit}`,
+    { cache: "no-store" },
+    { items: [], total: 0 }
+  );
 }
 
-export async function getRepository(repoId: string): Promise<Repository> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}`, {
-    cache: "no-store",
-  });
-  return handleResponse<Repository>(res);
+export async function getRepository(repoId: string): Promise<Repository | null> {
+  const data = await safeFetch(`/repos/${repoId}`, { cache: "no-store" }, null);
+  return data ? normalizeRepository(data) : null;
 }
 
 export async function createRepository(payload: {
   repo_url: string;
   branch: string;
-}): Promise<Repository> {
-  const res = await fetch(`${API_BASE_URL}/repos`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(payload),
-  });
-
-  return handleResponse<Repository>(res);
+}): Promise<Repository | null> {
+  const data = await safeFetch(
+    "/repos",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(payload),
+    },
+    null
+  );
+  return data ? normalizeRepository(data) : null;
 }
 
 export async function triggerParse(
   repoId: string
 ): Promise<{ message: string }> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/parse`, {
-    method: "POST",
-    cache: "no-store",
-  });
-
-  return handleResponse<{ message: string }>(res);
+  return safeFetch(
+    `/repos/${repoId}/parse`,
+    { method: "POST", cache: "no-store" },
+    { message: "Failed to trigger parse" }
+  );
 }
 
 export async function triggerEmbed(repoId: string): Promise<{
@@ -90,85 +118,95 @@ export async function triggerEmbed(repoId: string): Promise<{
   job_id: string;
   task_id: string;
 }> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/embed`, {
-    method: "POST",
-    cache: "no-store",
-  });
-
-  return handleResponse(res);
+  return safeFetch(
+    `/repos/${repoId}/embed`,
+    { method: "POST", cache: "no-store" },
+    {
+      message: "Failed to trigger embedding",
+      repository_id: repoId,
+      job_id: "",
+      task_id: "",
+    }
+  );
 }
 
 export async function getRepositoryFiles(
   repoId: string,
   limit = 100
 ): Promise<FileListResponse> {
-  const res = await fetch(
-    `${API_BASE_URL}/repos/${repoId}/files?limit=${limit}`,
-    {
-      cache: "no-store",
-    }
+  const data = await safeFetch(
+    `/repos/${repoId}/files?limit=${limit}`,
+    { cache: "no-store" },
+    { files: [], total: 0, limit }
   );
-
-  return handleResponse<FileListResponse>(res);
+  return normalizeFileListResponse(data);
 }
 
 export async function getRepositoryFileDetail(
   repoId: string,
   fileId: string
-): Promise<FileDetailResponse> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/files/${fileId}`, {
-    cache: "no-store",
-  });
-
-  return handleResponse<FileDetailResponse>(res);
+): Promise<FileDetailResponse | null> {
+  return safeFetch(
+    `/repos/${repoId}/files/${fileId}`,
+    { cache: "no-store" },
+    null
+  );
 }
 
 export async function semanticSearch(
   repoId: string,
   payload: { query: string; top_k?: number }
 ): Promise<SemanticSearchResponse> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/search`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(payload),
-  });
-
-  return handleResponse<SemanticSearchResponse>(res);
+  const data = await safeFetch(
+    `/repos/${repoId}/search`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(payload),
+    },
+    { query: payload.query, results: [] }
+  );
+  return normalizeSearchResponse(data);
 }
 
 export async function askRepo(
   repoId: string,
   payload: { question: string; top_k?: number }
 ): Promise<AskRepoResponse> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/ask`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(payload),
-  });
-
-  return handleResponse<AskRepoResponse>(res);
+  const data = await safeFetch(
+    `/repos/${repoId}/ask`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(payload),
+    },
+    {
+      question: payload.question,
+      answer: "The intelligence system is temporarily unavailable.",
+      context_used: [],
+      mode: "general",
+    }
+  );
+  return normalizeAskRepoResponse(data);
 }
 
 export async function getHotspots(
   repoId: string
 ): Promise<HotspotListResponse> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/hotspots?limit=20`, {
-    cache: "no-store",
-  });
-
-  return handleResponse<HotspotListResponse>(res);
+  const data = await safeFetch(
+    `/repos/${repoId}/hotspots?limit=20`,
+    { cache: "no-store" },
+    { hotspots: [], total: 0 }
+  );
+  return normalizeHotspotResponse(data);
 }
 
 export async function getOnboarding(
   repoId: string
-): Promise<OnboardingDocumentResponse> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/onboarding`, {
-    cache: "no-store",
-  });
-
-  return handleResponse<OnboardingDocumentResponse>(res);
+): Promise<OnboardingDocumentResponse | null> {
+  return safeFetch(`/repos/${repoId}/onboarding`, { cache: "no-store" }, null);
 }
 
 export async function generateOnboarding(repoId: string): Promise<{
@@ -178,8 +216,8 @@ export async function generateOnboarding(repoId: string): Promise<{
   generation_mode: string;
   llm_model?: string | null;
 }> {
-  const res = await fetch(
-    `${API_BASE_URL}/repos/${repoId}/onboarding/generate`,
+  return safeFetch(
+    `/repos/${repoId}/onboarding/generate`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -189,40 +227,59 @@ export async function generateOnboarding(repoId: string): Promise<{
         include_hotspots: true,
         include_search_context: true,
       }),
+    },
+    {
+      message: "Failed to generate onboarding",
+      repository_id: repoId,
+      document_id: "",
+      generation_mode: "standard",
     }
   );
-
-  return handleResponse(res);
 }
 
 export async function analyzeImpact(
   repoId: string,
   payload: { changed_files: string[]; max_depth?: number }
 ): Promise<PRImpactResponse> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/impact`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(payload),
-  });
-
-  return handleResponse<PRImpactResponse>(res);
+  const data = await safeFetch(
+    `/repos/${repoId}/impact`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(payload),
+    },
+    {
+      score: 0,
+      analysis: "Impact analysis unavailable.",
+      affected_files: [],
+      risks: [],
+    }
+  );
+  return normalizePRImpactResponse(data);
 }
 
 export async function getRepositoryRefreshJobs(
   repoId: string
 ): Promise<RefreshJobListResponse> {
-  const res = await fetch(`${API_BASE_URL}/repos/${repoId}/refresh-jobs`, {
-    cache: "no-store",
-  });
-
-  return handleResponse<RefreshJobListResponse>(res);
+  const data = await safeFetch(
+    `/jobs?repo_id=${repoId}&limit=50`,
+    { cache: "no-store" },
+    { items: [] }
+  );
+  return {
+    repository_id: repoId,
+    total: Array.isArray(data?.items) ? data.items.length : 0,
+    items: Array.isArray(data?.items) ? data.items.map(normalizeRefreshJob) : [],
+  };
 }
 
-export async function getRefreshJob(jobId: string): Promise<RefreshJob> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/refresh-jobs/${jobId}`, {
-    cache: "no-store",
-  });
-
-  return handleResponse<RefreshJob>(res);
+export async function getRefreshJob(jobId: string): Promise<RefreshJob | null> {
+  const data = await safeFetch(
+    `/jobs/${jobId}`,
+    { cache: "no-store" },
+    null
+  );
+  return data ? normalizeRefreshJob(data) : null;
 }
+

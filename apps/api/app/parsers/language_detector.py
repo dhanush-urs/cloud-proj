@@ -27,6 +27,13 @@ EXTENSION_LANGUAGE_MAP = {
     ".scala": "Scala",
     ".sh": "Shell",
     ".sql": "SQL",
+    ".html": "HTML",
+    ".htm": "HTML",
+    ".css": "CSS",
+    ".scss": "CSS",
+    ".sass": "CSS",
+    ".xml": "XML",
+    ".svg": "SVG",
 }
 
 

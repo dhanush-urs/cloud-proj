@@ -1,0 +1,115 @@
+"use client";
+
+import { useState } from "react";
+import { CodeBlockViewer } from "./CodeBlockViewer";
+
+type Props = {
+  content: string;
+  path: string;
+  highlightLines?: number[];
+};
+
+export function DataFileViewer({ content, path, highlightLines = [] }: Props) {
+  const [viewMode, setViewMode] = useState<"table" | "raw">("table");
+
+  // Basic CSV parsing
+  const isCsv = path.endsWith(".csv") || path.endsWith(".tsv");
+  const delimiter = path.endsWith(".tsv") ? "\t" : ",";
+  
+  const parseCsv = (text: string) => {
+    // A simple parser handling basic CSV structure.
+    const lines = text.trim().split("\n").filter(Boolean);
+    if (lines.length === 0) return [];
+    
+    return lines.map(line => {
+      const vals = [];
+      let current = "";
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === delimiter && !inQuotes) {
+          vals.push(current);
+          current = "";
+        } else {
+          current += char;
+        }
+      }
+      vals.push(current);
+      return vals;
+    });
+  };
+
+  const rows = isCsv ? parseCsv(content) : [];
+  const maxRows = 200;
+  const isTruncated = rows.length > maxRows;
+  const displayRows = rows.slice(0, maxRows);
+
+  if (!isCsv) {
+    return <CodeBlockViewer content={content} highlightLines={highlightLines} />;
+  }
+
+  return (
+    <div className="flex flex-col h-full space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-slate-400">
+          {viewMode === "table" && isTruncated && (
+            <span>Showing first {maxRows} rows of {rows.length}</span>
+          )}
+        </div>
+        <div className="flex bg-slate-900 border border-slate-700 rounded-md p-1">
+          <button
+            onClick={() => setViewMode("table")}
+            className={`px-3 py-1 text-xs font-semibold rounded ${
+              viewMode === "table" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            Table View
+          </button>
+          <button
+            onClick={() => setViewMode("raw")}
+            className={`px-3 py-1 text-xs font-semibold rounded ${
+              viewMode === "raw" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            Raw View
+          </button>
+        </div>
+      </div>
+
+      {viewMode === "table" ? (
+        <div className="overflow-x-auto rounded-xl border border-slate-700 bg-slate-900/50">
+          <table className="w-full text-left text-sm text-slate-300">
+            <thead className="bg-slate-800 text-xs uppercase text-slate-400 border-b border-slate-700 sticky top-0">
+              <tr>
+                <th className="px-4 py-3 font-medium bg-slate-800/80 w-12 text-center border-r border-slate-700">#</th>
+                {displayRows[0]?.map((col, idx) => (
+                  <th key={idx} className="px-4 py-3 font-medium bg-slate-800/80 whitespace-nowrap">
+                    {col.trim()}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {displayRows.slice(1).map((row, rIdx) => (
+                <tr key={rIdx} className="hover:bg-slate-800/50 transition-colors">
+                  <td className="px-4 py-2 font-mono text-xs text-slate-500 border-r border-slate-700 text-center">
+                    {rIdx + 2}
+                  </td>
+                  {row.map((col, cIdx) => (
+                    <td key={cIdx} className="px-4 py-2 whitespace-nowrap truncate max-w-[300px]">
+                      {col.trim()}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <CodeBlockViewer content={content} highlightLines={highlightLines} />
+      )}
+    </div>
+  );
+}

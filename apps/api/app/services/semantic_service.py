@@ -56,24 +56,13 @@ class SemanticService:
         self.db.execute(delete(Symbol).where(Symbol.repository_id == repository.id))
         self.db.execute(delete(DependencyEdge).where(DependencyEdge.repository_id == repository.id))
 
-        # reset parsed/failed files back to pending for supported files
-        files = list(
-            self.db.scalars(
-                select(File).where(File.repository_id == repository.id)
-            ).all()
-        )
-
-        for file_record in files:
-            if file_record.file_kind in {"source", "test", "config", "build", "script"} and not file_record.is_vendor and not file_record.is_generated:
-                file_record.parse_status = "pending"
-
-        self.db.commit()
-
+        # Identify files ready for semantic parsing
         files_to_parse = list(
             self.db.scalars(
                 select(File).where(
                     File.repository_id == repository.id,
-                    File.parse_status == "pending",
+                    File.parse_status == "content_extracted",
+                   File.file_kind.in_({"source", "test", "config", "build", "script"})
                 )
             ).all()
         )
@@ -88,14 +77,15 @@ class SemanticService:
             file_path = repo_root / file_record.path
 
             if not file_path.exists() or not file_path.is_file():
-                file_record.parse_status = "failed"
+                file_record.parse_status = "failed: missing_on_disk"
                 failed_files += 1
                 continue
 
             parser = self._get_parser_for_language(file_record.language)
 
             if not parser:
-                file_record.parse_status = "skipped"
+                # Still content_extracted or considered skipped specifically for symbols
+                file_record.parse_status = "parsed"
                 skipped_files += 1
                 continue
 

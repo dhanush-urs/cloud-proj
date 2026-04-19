@@ -59,6 +59,7 @@ class IngestionService:
             existing_branch.latest_commit_sha = commit_sha
 
         repository.default_branch = snapshot.branch_name
+        repository.local_path = str(local_path)
 
         self.db.commit()
 
@@ -69,15 +70,15 @@ class IngestionService:
         frameworks = detect_frameworks(repo_root)
 
         repository.primary_language = language_data["primary_language"]
-        repository.detected_languages = ",".join(language_data["language_counts"].keys())
-        repository.detected_frameworks = ",".join(frameworks)
+        repository.detected_languages = ", ".join(language_data["language_counts"].keys())
+        repository.detected_frameworks = ", ".join(frameworks)
 
         self.db.commit()
 
         return {
             "primary_language": repository.primary_language,
             "detected_languages": language_data["language_counts"],
-            "detected_frameworks": frameworks,
+            "detected_frameworks": repository.detected_frameworks,
             "total_detected_code_files": language_data["total_detected_code_files"],
         }
 
@@ -87,47 +88,93 @@ class IngestionService:
         self.db.commit()
 
         total_files = 0
+        batch = []
 
+        # DISCOVER_FILES & FILTER_FILES
         for path in iter_repo_files(repo_root):
-            if not path.is_file():
-                continue
+            try:
+                if not path.is_file():
+                    continue
 
-            relative_path = path.relative_to(repo_root)
-            relative_path_str = str(relative_path)
-            suffix = path.suffix.lower() or None
+                relative_path = path.relative_to(repo_root)
+                relative_path_str = str(relative_path)
+                suffix = path.suffix.lower() or None
 
-            file_meta = classify_file(relative_path)
-            language = detect_file_language(relative_path)
+                # CLASSIFY_FILES
+                file_meta = classify_file(relative_path)
+                
+                # EXTRACT_CONTENT
+                is_text = is_probably_text_file(path)
+                language = None
+                text = ""
+                line_count = 0
+                
+                if is_text:
+                    language = detect_file_language(relative_path)
+                    text = safe_read_text(path)
+                    line_count = count_lines(text) if text else 0
 
-            text = safe_read_text(path) if is_probably_text_file(path) else ""
-            line_count = count_lines(text) if text else 0
+                # Determine explicit initial status
+                should_parse = (
+                    (file_meta["file_kind"] in {
+                        "source", "test", "config", "build", "script", "doc",
+                        "markup", "style", "data"
+                    } or is_text)
+                    and not file_meta["is_vendor"]
+                    and not file_meta["is_generated"]
+                )
 
-            should_parse = (
-                file_meta["file_kind"] in {"source", "test", "config", "build", "script"}
-                and not file_meta["is_vendor"]
-                and not file_meta["is_generated"]
-            )
+                if file_meta["file_kind"] == "asset" and not is_text:
+                    parse_status = "metadata_only"
+                elif should_parse:
+                    parse_status = "content_extracted"
+                else:
+                    parse_status = "discovered"  # fallback for ignored or unknown binary
 
-            file_record = File(
-                repository_id=repository.id,
-                path=relative_path_str,
-                content=text,
-                language=language,
-                extension=suffix,
-                file_kind=file_meta["file_kind"],
-                size_bytes=path.stat().st_size,
-                line_count=line_count,
-                is_generated=file_meta["is_generated"],
-                is_test=file_meta["is_test"],
-                is_config=file_meta["is_config"],
-                is_doc=file_meta["is_doc"],
-                is_vendor=file_meta["is_vendor"],
-                parse_status="pending" if should_parse else "skipped",
-                checksum=sha256_file(path),
-            )
+                file_record = File(
+                    repository_id=repository.id,
+                    path=relative_path_str,
+                    content=text,
+                    language=language,
+                    extension=suffix,
+                    file_kind=file_meta["file_kind"],
+                    size_bytes=path.stat().st_size,
+                    line_count=line_count,
+                    is_generated=file_meta["is_generated"],
+                    is_test=file_meta["is_test"],
+                    is_config=file_meta["is_config"],
+                    is_doc=file_meta["is_doc"],
+                    is_vendor=file_meta["is_vendor"],
+                    parse_status=parse_status,
+                    checksum=sha256_file(path),
+                )
+                batch.append(file_record)
+                total_files += 1
 
-            self.db.add(file_record)
-            total_files += 1
+                if len(batch) >= 500:
+                    self.db.bulk_save_objects(batch)
+                    self.db.commit()
+                    batch.clear()
+
+            except Exception as e:
+                # Per-file exception handling
+                print(f"[WARN] Failed to ingest {path}: {str(e)}")
+                # We can try to persist a failed record if we at least have relative_path_str
+                try:
+                    if 'relative_path_str' in locals():
+                         err_record = File(
+                            repository_id=repository.id,
+                            path=relative_path_str,
+                            parse_status=f"failed: {type(e).__name__}",
+                            size_bytes=0,
+                         )
+                         self.db.add(err_record)
+                except Exception:
+                     pass
+
+        if batch:
+            self.db.bulk_save_objects(batch)
+            self.db.commit()
 
         repository.total_files = total_files
         self.db.commit()

@@ -104,24 +104,32 @@ export function AskRepoForm({ repoId }: Props) {
             </div>
           </div>
 
-          <div>
-            <h3 className="mb-2 text-lg font-semibold text-white">Citations</h3>
-            <div className="space-y-2">
-              {result.citations.map((c) => (
-                <div
-                  key={c.chunk_id}
-                  className="rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm"
-                >
-                  <div className="font-medium text-slate-200">
-                    {c.file_path || "unknown file"}
+          <details className="group rounded-lg border border-slate-800 bg-slate-900 overflow-hidden">
+            <summary className="cursor-pointer bg-slate-800/50 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800 focus:outline-none transition-colors">
+              Sources & Citations
+            </summary>
+            <div className="space-y-2 p-4">
+              {Array.isArray(result.citations) && result.citations.length > 0 ? (
+                result.citations.map((c) => (
+                  <div
+                    key={c.chunk_id || Math.random()}
+                    className="rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm"
+                  >
+                    <div className="font-medium text-slate-200">
+                      {c.file_path || "unknown file"}
+                    </div>
+                    {c.start_line && (
+                      <div className="text-slate-500 mt-1">
+                        lines {c.start_line} - {c.end_line ?? "?"}
+                      </div>
+                    )}
                   </div>
-                  <div className="text-slate-400">
-                    lines {c.start_line ?? "?"} - {c.end_line ?? "?"}
-                  </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-sm text-slate-500 italic">No citations provided.</p>
+              )}
             </div>
-          </div>
+          </details>
         </div>
       ) : null}
     </div>

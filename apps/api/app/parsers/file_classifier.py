@@ -1,113 +1,115 @@
 from pathlib import Path
 
 
-DOC_EXTENSIONS = {".md", ".mdx", ".txt", ".rst"}
-CONFIG_EXTENSIONS = {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env"}
-SCRIPT_EXTENSIONS = {".sh", ".bash", ".zsh", ".ps1"}
+# ── Extension sets ──────────────────────────────────────────────────────────
+
+DOC_EXTENSIONS = {".md", ".mdx", ".txt", ".rst", ".adoc"}
+
+CONFIG_EXTENSIONS = {
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".env", ".properties", ".conf", ".hcl", ".tf",
+}
+
+LOCK_EXTENSIONS = {".lock"}
+
+SCRIPT_EXTENSIONS = {".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat"}
+
+TEMPLATE_EXTENSIONS = {
+    ".html", ".htm",
+    ".ejs", ".hbs", ".handlebars", ".pug", ".jinja", ".jinja2",
+    ".njk", ".liquid", ".mustache", ".twig",
+}
+
+STYLE_EXTENSIONS = {".css", ".scss", ".sass", ".less"}
+
+DATA_EXTENSIONS = {".csv", ".tsv", ".sql", ".xml", ".graphql", ".gql", ".proto", ".prisma"}
+
 ASSET_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
-    ".mp4", ".mp3", ".wav", ".pdf", ".woff", ".woff2", ".ttf",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
+    ".mp4", ".mp3", ".wav", ".ogg",
+    ".pdf", ".woff", ".woff2", ".ttf", ".eot",
+    ".zip", ".tar", ".gz", ".tgz",
 }
 
 CODE_EXTENSIONS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs",
-    ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift",
-    ".kt", ".kts", ".scala", ".sql",
+    ".py", ".js", ".jsx", ".ts", ".tsx",
+    ".java", ".go", ".rs", ".c", ".cpp", ".h", ".hpp",
+    ".cs", ".rb", ".php", ".swift", ".kt", ".kts", ".scala",
+    ".svg",  # SVG is technically markup/data but treat as source-like
 }
 
+# Named files that are always "build" regardless of extension
 BUILD_FILES = {
-    "Dockerfile",
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "Makefile",
-    "Jenkinsfile",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "go.mod",
-    "Cargo.toml",
-    "package.json",
-    "pnpm-lock.yaml",
-    "package-lock.json",
-    "yarn.lock",
-    "requirements.txt",
-    "pyproject.toml",
+    "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    "Makefile", "Jenkinsfile", "Procfile", "Caddyfile", "Vagrantfile",
+    "pom.xml", "build.gradle", "build.gradle.kts",
+    "go.mod", "go.sum",
+    "Cargo.toml", "Cargo.lock",
+    "package.json", "package-lock.json",
+    "yarn.lock", "pnpm-lock.yaml", "bun.lockb",
+    "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg",
+    "Pipfile", "Pipfile.lock", "poetry.lock",
+    "Gemfile", "Gemfile.lock", "composer.json", "composer.lock",
+    "vite.config.ts", "vite.config.js",
+    "next.config.ts", "next.config.js", "next.config.mjs",
+    "tsconfig.json", "jsconfig.json",
+    ".gitignore", ".dockerignore", ".nvmrc", ".node-version",
 }
 
+# Named files that are config
+CONFIG_FILES = {
+    ".env", ".env.example", ".env.local", ".env.production",
+    ".env.development", ".env.test", ".env.staging",
+    ".editorconfig", ".prettierrc", ".eslintrc", ".babelrc",
+    ".eslintignore", ".prettierignore",
+    "CODEOWNERS", "renovate.json",
+}
+
+# Named files that are docs
+DOC_FILES = {
+    "README", "README.md", "README.rst", "README.txt",
+    "CHANGELOG", "CHANGELOG.md", "CHANGES", "HISTORY",
+    "LICENSE", "LICENCE", "NOTICE", "COPYING",
+    "AUTHORS", "CONTRIBUTORS", "HACKING", "TODO",
+}
+
+
+# ── Classifier helpers ──────────────────────────────────────────────────────
 
 def is_test_file(path: Path) -> bool:
     normalized = str(path).lower()
-
-    test_markers = [
-        "/test/",
-        "/tests/",
-        "\\test\\",
-        "\\tests\\",
-        "test_",
-        "_test.py",
-        ".spec.",
-        ".test.",
-    ]
-
     filename = path.name.lower()
-
-    if filename.startswith("test_"):
-        return True
-    if filename.endswith("_test.py"):
+    if filename.startswith("test_") or filename.endswith("_test.py"):
         return True
     if ".spec." in filename or ".test." in filename:
         return True
-
-    return any(marker in normalized for marker in test_markers)
+    return any(m in normalized for m in ("/test/", "/tests/", "\\test\\", "\\tests\\"))
 
 
 def is_vendor_file(path: Path) -> bool:
-    normalized_parts = {part.lower() for part in path.parts}
-
     vendor_dirs = {
-        "node_modules",
-        "vendor",
-        "dist",
-        "build",
-        ".next",
-        "coverage",
-        "target",
-        ".gradle",
-        "__pycache__",
-        ".venv",
-        "venv",
+        "node_modules", "vendor", "dist", "build", "out",
+        ".next", ".nuxt", ".svelte-kit", "coverage", "target",
+        ".gradle", "__pycache__", ".venv", "venv", "env",
     }
-
-    if normalized_parts & vendor_dirs:
+    if {part.lower() for part in path.parts} & vendor_dirs:
         return True
-
     filename = path.name.lower()
-
-    if filename.endswith(".min.js") or filename.endswith(".min.css"):
-        return True
-
-    return False
+    return filename.endswith(".min.js") or filename.endswith(".min.css")
 
 
 def is_generated_file(path: Path) -> bool:
     filename = path.name.lower()
-
     generated_markers = [
-        ".generated.",
-        "_generated.",
-        "generated_",
-        ".pb.go",
-        ".designer.cs",
+        ".generated.", "_generated.", "generated_",
+        ".pb.go", ".designer.cs",
     ]
-
-    if any(marker in filename for marker in generated_markers):
+    if any(m in filename for m in generated_markers):
         return True
+    return filename.endswith(".min.js") or filename.endswith(".min.css")
 
-    if filename.endswith(".min.js") or filename.endswith(".min.css"):
-        return True
 
-    return False
-
+# ── Main classifier ─────────────────────────────────────────────────────────
 
 def classify_file(path: Path) -> dict:
     suffix = path.suffix.lower()
@@ -117,9 +119,19 @@ def classify_file(path: Path) -> dict:
     vendor_flag = is_vendor_file(path)
     generated_flag = is_generated_file(path)
 
-    is_doc = suffix in DOC_EXTENSIONS or filename.lower() in {"readme", "readme.md", "license", "changelog.md"}
-    is_config = suffix in CONFIG_EXTENSIONS or filename in BUILD_FILES or filename.startswith(".env")
+    is_doc = (
+        suffix in DOC_EXTENSIONS
+        or filename in DOC_FILES
+        or filename.lower() in {"readme", "license", "changelog"}
+    )
+    is_config = (
+        suffix in CONFIG_EXTENSIONS
+        or suffix in LOCK_EXTENSIONS
+        or filename in CONFIG_FILES
+        or filename.startswith(".env")
+    )
 
+    # Determine file_kind — first-match priority
     if filename in BUILD_FILES:
         file_kind = "build"
     elif test_flag:
@@ -132,6 +144,12 @@ def classify_file(path: Path) -> dict:
         file_kind = "script"
     elif suffix in ASSET_EXTENSIONS:
         file_kind = "asset"
+    elif suffix in TEMPLATE_EXTENSIONS:
+        file_kind = "markup"
+    elif suffix in STYLE_EXTENSIONS:
+        file_kind = "style"
+    elif suffix in DATA_EXTENSIONS:
+        file_kind = "data"
     elif suffix in CODE_EXTENSIONS or filename in {"Dockerfile"}:
         file_kind = "source"
     else:

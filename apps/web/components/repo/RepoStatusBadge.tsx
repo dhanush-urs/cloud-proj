@@ -10,23 +10,23 @@ function statusTone(
   const normalized = status.toLowerCase();
 
   if (
-    normalized === "parsed" ||
-    normalized === "ready" ||
-    normalized === "completed"
+    ["parsed", "indexed", "embedded", "ready", "success", "completed"].includes(normalized)
   ) {
     return "green";
   }
 
   if (
-    normalized === "parsing" ||
-    normalized === "embedding" ||
-    normalized === "processing"
+    ["parsing", "indexing", "embedding", "processing", "queued", "running"].includes(normalized)
   ) {
     return "yellow";
   }
 
   if (normalized === "failed" || normalized === "error") {
     return "red";
+  }
+
+  if (normalized === "connected") {
+    return "blue";
   }
 
   return "default";

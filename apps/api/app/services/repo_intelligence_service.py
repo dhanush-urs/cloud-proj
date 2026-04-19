@@ -213,7 +213,7 @@ class RepoIntelligenceService:
                 "- backend_summary: 2-3 sentences describing backend architecture\n"
                 "- frontend_summary: 2-3 sentences describing frontend if present, else null\n"
                 "- api_routes_summary: list or description of main API routes/endpoints found\n"
-                "- db_summary: describe database models/engines/ORMs found\n"
+                "- db_summary: Describe database models/engines/ORMs found. ONLY if evidence exists. If no DB found, state 'No database detected'.\n"
                 "- auth_summary: describe authentication mechanism if found\n"
                 "- deployment_summary: describe deployment setup (Docker, CI, etc.) if found\n"
                 "- repo_summary_text: 3-4 paragraph executive summary of what this repo does\n"

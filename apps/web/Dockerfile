@@ -16,5 +16,5 @@ COPY . .
 
 EXPOSE 3000
 
-# Run dev server bound to 0.0.0.0
-CMD ["pnpm", "dev", "--host", "0.0.0.0"]
+# Run dev server (parameters like host/port are defined in package.json to avoid duplication)
+CMD ["pnpm", "dev"]

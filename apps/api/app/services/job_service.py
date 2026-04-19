@@ -5,6 +5,13 @@ from app.db.models.repo_job import RepoJob
 
 
 class JobService:
+    """
+    Manages job lifecycle using the canonical RepoJob model.
+    
+    IMPORTANT: Tasks (tasks_ingest, tasks_parse, tasks_embed) all use RepoJob.
+    This service must use the same model so job IDs match between API and task runner.
+    """
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -30,8 +37,7 @@ class JobService:
         job = self.db.get(RepoJob, job_id)
         if not job:
             return None
-
-        job.task_id = task_id
+        job.task_id = str(task_id)
         self.db.commit()
         self.db.refresh(job)
         return job

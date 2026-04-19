@@ -17,6 +17,7 @@ from app.services.job_service import JobService
 from app.services.rag_service import RAGService
 from app.services.repository_service import RepositoryService
 from app.workers.tasks_embed import embed_repository
+from app.workers.celery_app import dispatch_task
 
 router = APIRouter(tags=["search"])
 
@@ -32,10 +33,11 @@ def trigger_repository_embedding(
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    if repository.status not in {"indexed", "parsed"}:
+    EMBEDDABLE_STATUSES = {"indexed", "parsed", "embedded", "ready", "success"}
+    if repository.status not in EMBEDDABLE_STATUSES:
         raise HTTPException(
             status_code=400,
-            detail="Repository must be indexed or parsed before embedding",
+            detail=f"Repository must be indexed or parsed before embedding (current: {repository.status})",
         )
 
     job_service = JobService(db)
@@ -49,7 +51,7 @@ def trigger_repository_embedding(
     repository.status = "embedding"
     db.commit()
 
-    task = embed_repository.delay(repo_id, job.id)
+    task = dispatch_task(embed_repository, repo_id, job.id)
     job_service.update_task_id(job.id, task.id)
 
     return EmbedRepositoryResponse(
@@ -101,25 +103,12 @@ def ask_repository(
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    try:
-        rag_service = RAGService(db)
-        result = rag_service.ask_repo(
-            repository_id=repo_id,
-            question=payload.question,
-            top_k=payload.top_k,
-        )
-    except Exception as e:
-        import logging, traceback
-        logging.getLogger(__name__).error(f"Error in ask_repo: {str(e)}\n{traceback.format_exc()}")
-        # FIX 6: Graceful fallback when Gemini is unavailable or RAG pipeline fails.
-        # Always return a structured response — never 500.
-        return AskRepoResponse(
-            question=payload.question,
-            answer="I couldn't produce a reliable grounded answer from the indexed repository context right now.",
-            citations=[],
-            mode="fallback",
-            llm_model=None,
-        )
+    rag_service = RAGService(db)
+    result = rag_service.ask_repo(
+        repository_id=repo_id,
+        question=payload.question,
+        top_k=payload.top_k,
+    )
 
     return AskRepoResponse(
         question=payload.question,

@@ -6,6 +6,11 @@ type Props = {
 };
 
 export function RepoSummaryGrid({ repo }: Props) {
+  const sanitizeFramework = (val?: string | null) => {
+    if (!val) return "unknown";
+    return val.replace(/[{}[\]"']/g, "").split(",").map(s => s.trim()).filter(Boolean).join(", ");
+  };
+
   const items = [
     {
       label: "Default Branch",
@@ -17,7 +22,7 @@ export function RepoSummaryGrid({ repo }: Props) {
     },
     {
       label: "Framework",
-      value: repo.framework || <span className="text-slate-500 italic">unknown</span>,
+      value: sanitizeFramework(repo.framework),
     },
     {
       label: "Repository Status",

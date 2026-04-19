@@ -22,6 +22,10 @@ export function CreateRepoForm() {
         branch,
       });
 
+      if (!repo || !repo.id) {
+        throw new Error("Failed to create repository: No data returned from API.");
+      }
+
       router.push(`/repos/${repo.id}`);
       router.refresh();
     } catch (err) {
