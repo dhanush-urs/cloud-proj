@@ -12,6 +12,7 @@ class FileItem(BaseModel):
 
 class FileListResponse(BaseModel):
     repository_id: str
+    status: str | None = None
     total: int
     items: list[FileItem]
 
@@ -27,3 +28,5 @@ class FileDetailResponse(BaseModel):
     is_generated: bool = False
     is_vendor: bool = False
     content: str | None = None
+    raw_url: str | None = None
+    is_binary: bool = False

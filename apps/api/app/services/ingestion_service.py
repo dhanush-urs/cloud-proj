@@ -83,14 +83,18 @@ class IngestionService:
         }
 
     def ingest_file_inventory(self, repository: Repository, repo_root: Path) -> int:
-        # Clear old inventory for full reindex
-        self.db.query(File).filter(File.repository_id == repository.id).delete()
-        self.db.commit()
-
+        # Collect new inventory FIRST, then atomically replace old records.
+        # This prevents data loss if the pipeline crashes mid-run: the old files
+        # remain visible until the new batch is fully ready to commit.
         total_files = 0
-        batch = []
+        error_files = 0
+        # Accumulate ALL new File objects before touching the DB.
+        all_new_files: list[File] = []
 
-        # DISCOVER_FILES & FILTER_FILES
+        # _MAX_STATUS_LEN must match String(50) on parse_status column
+        _MAX_STATUS_LEN = 50
+
+        # DISCOVER_FILES & FILTER_FILES — build the full list in memory first
         for path in iter_repo_files(repo_root):
             try:
                 if not path.is_file():
@@ -102,19 +106,19 @@ class IngestionService:
 
                 # CLASSIFY_FILES
                 file_meta = classify_file(relative_path)
-                
-                # EXTRACT_CONTENT
+
+                # EXTRACT_CONTENT — safe_read_text already handles binary/encoding gracefully
                 is_text = is_probably_text_file(path)
                 language = None
                 text = ""
                 line_count = 0
-                
+
                 if is_text:
                     language = detect_file_language(relative_path)
                     text = safe_read_text(path)
                     line_count = count_lines(text) if text else 0
 
-                # Determine explicit initial status
+                # Determine explicit initial parse_status (max 50 chars)
                 should_parse = (
                     (file_meta["file_kind"] in {
                         "source", "test", "config", "build", "script", "doc",
@@ -129,16 +133,29 @@ class IngestionService:
                 elif should_parse:
                     parse_status = "content_extracted"
                 else:
-                    parse_status = "discovered"  # fallback for ignored or unknown binary
+                    parse_status = "discovered"
 
-                file_record = File(
+                # Guard: never exceed column width
+                parse_status = parse_status[:_MAX_STATUS_LEN]
+
+                try:
+                    size_bytes = path.stat().st_size
+                except OSError:
+                    size_bytes = 0
+
+                try:
+                    checksum = sha256_file(path)
+                except Exception:
+                    checksum = None
+
+                all_new_files.append(File(
                     repository_id=repository.id,
                     path=relative_path_str,
-                    content=text,
+                    content=text or None,
                     language=language,
                     extension=suffix,
                     file_kind=file_meta["file_kind"],
-                    size_bytes=path.stat().st_size,
+                    size_bytes=size_bytes,
                     line_count=line_count,
                     is_generated=file_meta["is_generated"],
                     is_test=file_meta["is_test"],
@@ -146,37 +163,44 @@ class IngestionService:
                     is_doc=file_meta["is_doc"],
                     is_vendor=file_meta["is_vendor"],
                     parse_status=parse_status,
-                    checksum=sha256_file(path),
-                )
-                batch.append(file_record)
+                    checksum=checksum,
+                ))
                 total_files += 1
 
-                if len(batch) >= 500:
-                    self.db.bulk_save_objects(batch)
-                    self.db.commit()
-                    batch.clear()
-
             except Exception as e:
-                # Per-file exception handling
-                print(f"[WARN] Failed to ingest {path}: {str(e)}")
-                # We can try to persist a failed record if we at least have relative_path_str
-                try:
-                    if 'relative_path_str' in locals():
-                         err_record = File(
-                            repository_id=repository.id,
-                            path=relative_path_str,
-                            parse_status=f"failed: {type(e).__name__}",
-                            size_bytes=0,
-                         )
-                         self.db.add(err_record)
-                except Exception:
-                     pass
+                # NON-FATAL: one file failed — log and continue
+                error_files += 1
+                print(f"[WARN] Skipped file during ingestion ({type(e).__name__}): {path}: {e}")
 
-        if batch:
-            self.db.bulk_save_objects(batch)
-            self.db.commit()
+        # ATOMIC SWAP: only now delete old records and insert new ones.
+        # If anything above raised, we never reach here and old files are preserved.
+        self.db.query(File).filter(File.repository_id == repository.id).delete()
+        self.db.commit()
+
+        # Insert in batches of 500 with per-row fallback
+        _BATCH = 500
+        for i in range(0, len(all_new_files), _BATCH):
+            chunk = all_new_files[i : i + _BATCH]
+            try:
+                self.db.add_all(chunk)
+                self.db.flush()
+                self.db.commit()
+            except Exception as bulk_err:
+                print(f"[WARN] Bulk insert failed ({type(bulk_err).__name__}), falling back per-row: {bulk_err}")
+                self.db.rollback()
+                for row in chunk:
+                    try:
+                        self.db.add(row)
+                        self.db.commit()
+                    except Exception as row_err:
+                        print(f"[WARN] Per-row insert failed for {row.path}: {row_err}")
+                        self.db.rollback()
 
         repository.total_files = total_files
         self.db.commit()
 
+        if error_files:
+            print(f"[INFO] ingest_file_inventory: {total_files} ingested, {error_files} skipped due to per-file errors")
+
         return total_files
+

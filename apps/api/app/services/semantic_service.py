@@ -74,56 +74,89 @@ class SemanticService:
         total_dependencies = 0
 
         for file_record in files_to_parse:
-            file_path = repo_root / file_record.path
+            try:
+                file_path = repo_root / file_record.path
 
-            if not file_path.exists() or not file_path.is_file():
-                file_record.parse_status = "failed: missing_on_disk"
-                failed_files += 1
-                continue
+                if not file_path.exists() or not file_path.is_file():
+                    file_record.parse_status = "failed: missing_on_disk"
+                    failed_files += 1
+                    continue
 
-            parser = self._get_parser_for_language(file_record.language)
+                # PREVENT PATHOLOGICAL SLOWDOWNS: Skip massive files (e.g. bundled/vendor JS, heavy auto-generated code)
+                file_size = file_path.stat().st_size
+                if file_size > 512 * 1024 or (file_record.line_count and file_record.line_count > 8000):
+                    file_record.parse_status = "skipped_large"
+                    skipped_files += 1
+                    continue
 
-            if not parser:
-                # Still content_extracted or considered skipped specifically for symbols
+                parser = self._get_parser_for_language(file_record.language)
+
+                if not parser:
+                    # Still content_extracted or considered skipped specifically for symbols
+                    file_record.parse_status = "parsed"
+                    skipped_files += 1
+                    continue
+
+                result = parser.parse(file_path)
+
+                if result.get("error"):
+                    file_record.parse_status = "failed"
+                    failed_files += 1
+                    continue
+
+                # BOUNDARY: Limit maximum extracted symbols/edges to prevent ORM / Session bloat
+                max_items = 2000
+                extracted_symbols = result.get("symbols", [])[:max_items]
+                extracted_deps = result.get("dependencies", [])[:max_items]
+
+                for symbol_data in extracted_symbols:
+                    symbol = Symbol(
+                        repository_id=repository.id,
+                        file_id=file_record.id,
+                        name=symbol_data["name"][:255],  # ensure safe length
+                        symbol_type=symbol_data["symbol_type"],
+                        signature=str(symbol_data.get("signature"))[:1000] if symbol_data.get("signature") else None,
+                        start_line=symbol_data.get("start_line", 0),
+                        end_line=symbol_data.get("end_line", 0),
+                        summary=str(symbol_data.get("summary"))[:2000] if symbol_data.get("summary") else None,
+                    )
+                    self.db.add(symbol)
+                    total_symbols += 1
+
+                for dep_data in extracted_deps:
+                    edge = DependencyEdge(
+                        repository_id=repository.id,
+                        source_file_id=file_record.id,
+                        target_file_id=None,
+                        edge_type=dep_data["edge_type"],
+                        source_ref=str(dep_data.get("source_ref"))[:255] if dep_data.get("source_ref") else None,
+                        target_ref=str(dep_data.get("target_ref"))[:255] if dep_data.get("target_ref") else None,
+                    )
+                    self.db.add(edge)
+                    total_dependencies += 1
+
                 file_record.parse_status = "parsed"
-                skipped_files += 1
-                continue
+                parsed_files += 1
+                
+                # FLUSH incrementally to prevent monolithic session bloat
+                self.db.flush()
 
-            result = parser.parse(file_path)
-
-            if result.get("error"):
-                file_record.parse_status = "failed"
+            except Exception as _file_parse_err:
+                self.db.rollback()
+                # NON-FATAL: parser crash or DB flush error on this file — mark it and continue
                 failed_files += 1
-                continue
+                logger.warning(f"[SemanticService] Parser/DB exception for {file_record.path}: {_file_parse_err}")
+                try:
+                    from sqlalchemy import update
+                    self.db.execute(
+                        update(File)
+                        .where(File.id == file_record.id)
+                        .values(parse_status="failed")
+                    )
+                    self.db.commit()
+                except Exception:
+                    self.db.rollback()
 
-            for symbol_data in result["symbols"]:
-                symbol = Symbol(
-                    repository_id=repository.id,
-                    file_id=file_record.id,
-                    name=symbol_data["name"],
-                    symbol_type=symbol_data["symbol_type"],
-                    signature=symbol_data.get("signature"),
-                    start_line=symbol_data.get("start_line", 0),
-                    end_line=symbol_data.get("end_line", 0),
-                    summary=symbol_data.get("summary"),
-                )
-                self.db.add(symbol)
-                total_symbols += 1
-
-            for dep_data in result["dependencies"]:
-                edge = DependencyEdge(
-                    repository_id=repository.id,
-                    source_file_id=file_record.id,
-                    target_file_id=None,
-                    edge_type=dep_data["edge_type"],
-                    source_ref=dep_data.get("source_ref"),
-                    target_ref=dep_data.get("target_ref"),
-                )
-                self.db.add(edge)
-                total_dependencies += 1
-
-            file_record.parse_status = "parsed"
-            parsed_files += 1
 
         repository.total_symbols = total_symbols
         self.db.commit()

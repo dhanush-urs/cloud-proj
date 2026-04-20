@@ -11,6 +11,8 @@ export function RepoSummaryGrid({ repo }: Props) {
     return val.replace(/[{}[\]"']/g, "").split(",").map(s => s.trim()).filter(Boolean).join(", ");
   };
 
+  const languages = repo.languages_used ?? [];
+
   const items = [
     {
       label: "Default Branch",
@@ -31,17 +33,37 @@ export function RepoSummaryGrid({ repo }: Props) {
   ];
 
   return (
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-      {items.map((item) => (
-        <Card key={item.label}>
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
-            {item.label}
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {items.map((item) => (
+          <Card key={item.label}>
+            <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              {item.label}
+            </div>
+            <div className="mt-3 break-all overflow-hidden text-lg font-semibold text-white">
+              {item.value}
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      {languages.length > 0 && (
+        <Card>
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-400 mb-3">
+            Languages Used
           </div>
-          <div className="mt-3 break-all overflow-hidden text-lg font-semibold text-white">
-            {item.value}
+          <div className="flex flex-wrap gap-2">
+            {languages.map((lang) => (
+              <span
+                key={lang}
+                className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-sm text-slate-200 font-medium"
+              >
+                {lang}
+              </span>
+            ))}
           </div>
         </Card>
-      ))}
+      )}
     </div>
   );
 }

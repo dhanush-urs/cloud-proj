@@ -15,7 +15,7 @@ def _serialize_job(j) -> dict:
     RepositoryRefreshJob or RepoJob model — they have different field names.
     This unified serializer handles both schemas gracefully.
     """
-    # RepositoryRefreshJob uses: event_type, summary, error_message
+    # RepositoryRefreshJob uses: event_type, summary, error_message, changed_files_json
     # RepoJob uses: job_type, message, error_details, started_at, completed_at
     job_type = getattr(j, "job_type", None) or getattr(j, "event_type", None) or "unknown"
     message = getattr(j, "message", None) or getattr(j, "summary", None) or ""
@@ -24,6 +24,25 @@ def _serialize_job(j) -> dict:
     completed_at = getattr(j, "completed_at", None)
     updated_at = getattr(j, "updated_at", None)
 
+    # For RepositoryRefreshJob, changed_files_json holds the real list.
+    # For RepoJob (index/parse/embed tasks), there is no such field — extract
+    # the file count from the message and surface it as a count integer so the
+    # UI shows something meaningful instead of 0.
+    raw_changed_files_json = getattr(j, "changed_files_json", None)
+    if raw_changed_files_json is not None:
+        # RepositoryRefreshJob path
+        try:
+            changed_files = __import__("json").loads(raw_changed_files_json or "[]")
+        except Exception:
+            changed_files = []
+    else:
+        # RepoJob path — parse total_files count from message if present
+        import re as _re
+        _match = _re.search(r"(\d+)\s+files?\s+(?:ingested|indexed|embedded)", message or "")
+        file_count = int(_match.group(1)) if _match else 0
+        # Return as a synthetic list of the count so the UI can display it
+        changed_files = list(range(file_count)) if file_count > 0 else []
+
     return {
         "id": j.id,
         "repository_id": getattr(j, "repository_id", None),
@@ -31,7 +50,7 @@ def _serialize_job(j) -> dict:
         "event_type": getattr(j, "event_type", None) or job_type,
         "trigger_source": getattr(j, "trigger_source", "system"),
         "branch": getattr(j, "branch", None),
-        "changed_files": __import__("json").loads(getattr(j, "changed_files_json", None) or "[]"),
+        "changed_files": changed_files,
         "status": getattr(j, "status", "unknown"),
         "message": message,
         "summary": message,

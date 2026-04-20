@@ -165,10 +165,14 @@ class RepoIntelligenceService:
         scored_files.sort(key=lambda x: x[0], reverse=True)
         key_files_records = [f for _, f in scored_files[:60]]
 
-        # Also update importance_score on File rows
-        for score, f in scored_files[:100]:
-            f.importance_score = round(score, 2)
-        self.db.flush()
+        # Also update importance_score on File rows (non-fatal — column may not be mapped yet)
+        try:
+            for score, f in scored_files[:100]:
+                f.importance_score = round(score, 2)
+            self.db.flush()
+        except Exception as _score_err:
+            logger.warning(f"[IntelligenceService] importance_score update skipped: {_score_err}")
+            self.db.rollback()
 
         # ── Step 4: Build context bundle for Gemini ───────────────────────────
         key_files_paths = [f.path for f in key_files_records[:30]]

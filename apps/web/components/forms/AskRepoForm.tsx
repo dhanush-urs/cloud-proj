@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { askRepo } from "@/lib/api";
-import type { AskRepoResponse, RenameAnalysis } from "@/lib/types";
+import { useRef, useState } from "react";
+import type { AskRepoResponse } from "@/lib/types";
 
 type Props = {
   repoId: string;
@@ -13,34 +12,65 @@ export function AskRepoForm({ repoId }: Props) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AskRepoResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  function cleanAnswer(text: string) {
-    if (!text) return "";
-    return text
-      .replace(/^[=\-]{3,}$/gm, "") // Remove separator lines like ==== or ----
-      .replace(/#{1,6}\s/g, "") // Remove all markdown headers
-      .replace(/\*\*/g, "") // bold
-      .replace(/__/g, "") // italic/bold
-      .replace(/`/g, "") // inline code
-      .trim();
-  }
+  const requestSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const currentQuestion = question.trim();
+    if (!currentQuestion) return;
+
+    requestSeqRef.current += 1;
+    const requestSeq = requestSeqRef.current;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
-      const response = await askRepo(repoId, {
-        question,
-        top_k: 5,
+      const response = await fetch(`/api/v1/repos/${encodeURIComponent(repoId)}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: currentQuestion,
+          top_k: 6,
+        }),
+        signal: controller.signal,
       });
-      setResult(response);
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const detail =
+          (payload && typeof payload.detail === "string" ? payload.detail : null) ||
+          "Failed to ask repository";
+        throw new Error(detail);
+      }
+
+      const payload = (await response.json()) as AskRepoResponse;
+      if (requestSeq !== requestSeqRef.current) return;
+
+      const cleanAnswer = (payload?.answer || "").trim();
+      if (!cleanAnswer) {
+        throw new Error("Received an empty answer for this query.");
+      }
+
+      setResult({
+        ...payload,
+        question: currentQuestion,
+        answer: cleanAnswer,
+      });
     } catch (err) {
+      if ((err as Error)?.name === "AbortError") return;
+      if (requestSeq !== requestSeqRef.current) return;
       setError(err instanceof Error ? err.message : "Failed to ask repository");
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -73,39 +103,14 @@ export function AskRepoForm({ repoId }: Props) {
 
       {result ? (
         <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/70 p-5">
-          <div className="flex flex-wrap gap-2">
-            {result.confidence ? (
-              <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
-                result.confidence === 'high' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' :
-                result.confidence === 'medium' ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400' :
-                'border-rose-500/30 bg-rose-500/10 text-rose-400'
-              }`}>
-                {result.confidence === 'high' ? 'High Confidence' : 
-                 result.confidence === 'medium' ? 'Medium Confidence' : 
-                 'Low Confidence'}
-              </span>
-            ) : null}
-            {result.resolved_file ? (
-              <span className="rounded-full border border-blue-800 bg-blue-950 px-2 py-1 text-xs text-blue-300">
-                {result.resolved_file}
-                {result.resolved_line_number ? `:${result.resolved_line_number}` : ""}
-              </span>
-            ) : null}
+          <div className="whitespace-pre-wrap text-sm text-slate-300 leading-relaxed">
+            {result.answer}
           </div>
 
-          {/* Rename Impact Card — shown when backend resolves a rename analysis */}
-          {result.rename_analysis ? (
-            <RenameImpactCard ra={result.rename_analysis} />
-          ) : null}
-
-          <div className="pt-2">
-            <h3 className="mb-3 text-lg font-semibold text-slate-100">Analysis</h3>
-            <div className="text-sm text-slate-300 leading-relaxed prose prose-invert max-w-none selection:bg-blue-500/30">
-              {cleanAnswer(result.answer)}
-            </div>
-          </div>
-
-          <details className="group rounded-lg border border-slate-800 bg-slate-900 overflow-hidden">
+          <details
+            className="group rounded-lg border border-slate-800 bg-slate-900 overflow-hidden"
+            open={Array.isArray(result.citations) && result.citations.length > 0}
+          >
             <summary className="cursor-pointer bg-slate-800/50 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800 focus:outline-none transition-colors">
               Sources & Citations
             </summary>
@@ -131,52 +136,6 @@ export function AskRepoForm({ repoId }: Props) {
               )}
             </div>
           </details>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function RenameImpactCard({ ra }: { ra: RenameAnalysis }) {
-  const refs = ra.same_file_references ?? [];
-  return (
-    <div className="rounded-lg border border-amber-700/40 bg-amber-950/20 p-4 text-sm space-y-3">
-      <div className="font-semibold text-amber-300">
-        Rename Impact: &apos;{ra.symbol_name}&apos; → &apos;{ra.new_name}&apos;
-      </div>
-      <div className="grid grid-cols-2 gap-2 text-xs text-slate-400">
-        <span>Resolved File</span>
-        <span className="text-slate-200 truncate">{(ra as any).file_path ?? "see answer"}</span>
-        <span>Declaration Line</span>
-        <span className="text-slate-200">{ra.declaration_line}</span>
-        <span>Language</span>
-        <span className="text-slate-200">{ra.language}</span>
-      </div>
-      {refs.length > 0 ? (
-        <div className="space-y-1">
-          <div className="text-rose-400 font-medium">
-            Declaration-only rename BREAKS — {refs.length} reference{refs.length !== 1 ? "s" : ""} still use &apos;{ra.symbol_name}&apos;:
-          </div>
-          <div className="rounded bg-slate-950 p-2 space-y-0.5 max-h-40 overflow-y-auto">
-            {refs.map((r) => (
-              <div key={r.line_no} className="text-xs text-slate-300 font-mono">
-                <span className="text-slate-500 mr-2">line {r.line_no}</span>
-                {r.line_text}
-              </div>
-            ))}
-          </div>
-          <div className="text-xs text-slate-400">
-            Error if partial: <span className="text-rose-300">{ra.error_if_partial}</span>
-          </div>
-        </div>
-      ) : (
-        <div className="text-emerald-400 text-xs">
-          No same-file references found after declaration — rename appears safe in this file.
-        </div>
-      )}
-      {ra.full_rename_safe ? (
-        <div className="text-emerald-400 text-xs">
-          Full consistent rename (all references updated) is safe — no behavioral change.
         </div>
       ) : null}
     </div>

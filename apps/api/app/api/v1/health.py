@@ -1,5 +1,4 @@
 from fastapi import APIRouter
-from neo4j import GraphDatabase
 from redis import Redis
 from sqlalchemy import text
 
@@ -50,6 +49,7 @@ def readiness_check():
         redis_error = str(exc)
 
     try:
+        from neo4j import GraphDatabase  # lazy — optional dependency
         driver = GraphDatabase.driver(
             settings.NEO4J_URI,
             auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),

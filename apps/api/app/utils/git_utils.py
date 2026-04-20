@@ -15,27 +15,33 @@ def build_repo_local_path(repository_id: str) -> Path:
 
 
 def clone_repository(repo_url: str, repository_id: str, branch: str | None = None) -> tuple[Path, str]:
+    import shutil
     target_path = build_repo_local_path(repository_id)
 
     if target_path.exists():
-        # if directory exists from previous failed run, reuse carefully
         if (target_path / ".git").exists():
+            # Try to open and fetch — if either fails the .git dir is corrupt.
+            _fetch_ok = False
             try:
                 repo = Repo(target_path)
                 repo.remotes.origin.fetch("--all", "--prune")
+                _fetch_ok = True
             except Exception:
-                # if fetch fails, maybe it's corrupted; wipe and re-clone
-                import shutil
+                pass
+
+            if not _fetch_ok:
+                # Corrupted or incomplete .git — wipe entirely and re-clone.
                 shutil.rmtree(target_path, ignore_errors=True)
                 target_path.mkdir(parents=True, exist_ok=True)
-            # remove stale non-git content
-            for child in target_path.iterdir():
-                if child.name == ".git":
-                    continue
-                if child.is_file():
-                    child.unlink()
-                else:
-                    shutil.rmtree(child, ignore_errors=True)
+            else:
+                # Fetch succeeded — remove stale non-git working-tree content.
+                for child in target_path.iterdir():
+                    if child.name == ".git":
+                        continue
+                    if child.is_file():
+                        child.unlink()
+                    else:
+                        shutil.rmtree(child, ignore_errors=True)
     else:
         target_path.mkdir(parents=True, exist_ok=True)
 

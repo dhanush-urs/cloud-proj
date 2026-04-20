@@ -17,6 +17,24 @@ def index_repository(repository_id: str, job_id: str) -> dict:
         if not repository or not job:
             return {"status": "error", "message": "Repository or job not found"}
 
+        # STALE JOB CLEANUP: mark any older running index_repository jobs for this
+        # repo as stale so they don't pollute the jobs list forever.
+        from sqlalchemy import select as _select
+        stale_jobs = list(db.scalars(
+            _select(RepoJob).where(
+                RepoJob.repository_id == repository_id,
+                RepoJob.job_type == "index_repository",
+                RepoJob.status == "running",
+                RepoJob.id != job_id,
+            )
+        ).all())
+        for stale in stale_jobs:
+            stale.status = "cancelled"
+            stale.completed_at = utc_now()
+            stale.message = "Superseded by a newer index_repository run."
+        if stale_jobs:
+            db.commit()
+
         job.status = "running"
         job.message = "Repository ingestion started"
         repository.status = "indexing"
@@ -80,8 +98,9 @@ def index_repository(repository_id: str, job_id: str) -> dict:
             repository.status = "parsed"
         except Exception as _parse_err:
             print(f"Non-fatal error in semantic parsing: {str(_parse_err)}")
+            db.rollback()
             repository.status = "parsed_with_errors"
-        db.commit()
+            db.commit()
 
         # STAGE: EMBED_CONTENT
         job.message = "Stage: EMBED_CONTENT - Generating vector embeddings for semantic search"
@@ -96,28 +115,47 @@ def index_repository(repository_id: str, job_id: str) -> dict:
             pipeline_success = True
         except Exception as _embed_err:
             print(f"Non-fatal error in embedding: {str(_embed_err)}")
+            db.rollback()
             repository.status = "embedded_with_errors"
+            db.commit()
             pipeline_success = True  # We still consider it partially successful as long as we have code
 
         # STAGE: FINALIZE_STATUS
-        # Threshold: if we have files, the repository is fundamentally usable.
-        if total_files > 0:
+        # Rules:
+        #   READY   — files ingested AND searchable chunks produced
+        #   DEGRADED — files ingested BUT 0 chunks (inventory only; Search/Ask Repo unusable)
+        #   FAILED  — 0 files ingested (clone succeeded but nothing was readable)
+        parsed_count = embed_result.get("processed_files", 0)
+        chunk_count = embed_result.get("total_chunks", 0)
+
+        if total_files > 0 and chunk_count > 0:
             repository.status = "ready"
             job.status = "completed"
             job.message = (
-                f"Full pipeline completed: files={total_files}, "
-                f"chunks={embed_result.get('total_chunks', 0)}"
+                f"Indexing complete: {total_files} files ingested, "
+                f"{parsed_count} embedded, {chunk_count} chunks. "
+                f"Repository is ready for Search and Ask Repo."
+            )
+        elif total_files > 0:
+            # Files discovered but nothing was embeddable — inventory exists.
+            # We use 'indexed' as the success-like state for this scenario.
+            repository.status = "indexed"
+            job.status = "completed"
+            job.message = (
+                f"Repository inventory complete: {total_files} files indexed. "
+                f"No searchable chunks were produced — semantic search and Ask Repo "
+                f"will use file-level keyword search only."
             )
         else:
             repository.status = "failed"
             job.status = "failed"
-            job.message = "Pipeline finished with 0 files ingested."
-            
+            job.message = "Pipeline finished with 0 files ingested — repository may be empty or all files were unreadable."
+
         job.completed_at = utc_now()
         db.commit()
 
         return {
-            "status": "completed" if total_files > 0 else "failed",
+            "status": job.status,
             "repository_id": repository_id,
             "job_id": job_id,
             "snapshot_id": snapshot.id,
@@ -136,17 +174,70 @@ def index_repository(repository_id: str, job_id: str) -> dict:
         print(f"[ERROR] index_repository failed: {error_msg}")
         traceback.print_exc()
 
+        db.rollback()
         job = db.get(RepoJob, job_id)
         repository = db.get(Repository, repository_id)
-        
-        if job:
-            job.status = "failed"
-            job.message = f"Repository ingestion failed: {error_msg}"
-            job.error_details = traceback.format_exc()
-            job.completed_at = utc_now()
 
+        # Determine whether the repository has usable content in the DB,
+        # regardless of what status was set before the crash.
+        # A new run that fails at clone time sets status='indexing' before any
+        # work — but a PREVIOUS successful run may have left files and chunks.
+        # We must check actual DB counts, not just the in-flight status string.
+        _total_files_recovered = locals().get("total_files", 0)
+
+        _has_usable_content = False
         if repository:
+            # Check _INVENTORY_DONE_STATUSES first (fast path — no extra query)
+            _INVENTORY_DONE_STATUSES = {
+                "indexed", "ready",
+                "parsing", "parsed", "parsed_with_errors",
+                "embedding", "embedded", "embedded_with_errors",
+            }
+            if _total_files_recovered > 0 or repository.status in _INVENTORY_DONE_STATUSES:
+                _has_usable_content = True
+            else:
+                # Slow path: the status is 'indexing' or 'connected' (set at job
+                # start, before any inventory work).  A previous successful run
+                # may have left files/chunks in the DB — check directly.
+                from sqlalchemy import func as _func, select as _sel
+                from app.db.models.file import File as _File
+                _db_file_count = db.scalar(
+                    _sel(_func.count(_File.id)).where(_File.repository_id == repository_id)
+                ) or 0
+                if _db_file_count > 0:
+                    _has_usable_content = True
+
+        if _has_usable_content:
+            # Preserve the best terminal status that reflects actual capability.
+            # If the repo already had a good status from a previous run, keep it.
+            _KEEP_STATUSES = {
+                "ready", "indexed",
+                "parsed", "parsed_with_errors",
+                "embedded", "embedded_with_errors",
+            }
+            if repository.status not in _KEEP_STATUSES:
+                # Was mid-flight (indexing/parsing/embedding) when it crashed —
+                # check chunks to decide between ready and indexed.
+                from sqlalchemy import func as _func2, select as _sel2
+                from app.db.models.embedding_chunk import EmbeddingChunk as _EC
+                _db_chunk_count = db.scalar(
+                    _sel2(_func2.count(_EC.id)).where(_EC.repository_id == repository_id)
+                ) or 0
+                repository.status = "ready" if _db_chunk_count > 0 else "indexed"
+            if job:
+                job.status = "completed"
+                job.completed_at = utc_now()
+                job.message = (
+                    f"Repository re-index encountered an error ({error_msg}), "
+                    f"but previous indexed content is still available."
+                )
+        elif repository:
+            # Truly nothing usable — mark failed.
             repository.status = "failed"
+            if job:
+                job.status = "failed"
+                job.completed_at = utc_now()
+                job.message = f"Repository indexing failed: {error_msg}"
 
         db.commit()
 

@@ -18,6 +18,7 @@ class RepoResponse(BaseModel):
     status: str
     primary_language: str | None = None
     framework: str | None = None
+    languages_used: list[str] = []
     created_at: datetime
 
 

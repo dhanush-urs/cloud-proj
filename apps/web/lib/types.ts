@@ -5,6 +5,7 @@ export type Repository = {
   status: string;
   primary_language?: string | null;
   framework?: string | null;
+  languages_used?: string[];
   created_at?: string;
 };
 
@@ -19,6 +20,7 @@ export type FileRecord = {
 
 export type FileListResponse = {
   repository_id?: string;
+  status?: string | null;
   total: number;
   items: FileRecord[];
 };
@@ -34,6 +36,8 @@ export type FileDetailResponse = {
   is_generated?: boolean;
   is_vendor?: boolean;
   content?: string | null;
+  raw_url?: string | null;
+  is_binary?: boolean;
 };
 
 export type SearchResultItem = {

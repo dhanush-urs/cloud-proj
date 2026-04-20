@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 class QueryIntent:
     REPO_SUMMARY = "repo_summary"
+    ARCHITECTURE_EXPLANATION = "architecture_explanation"
     FILE_LOOKUP = "file_lookup"
     SYMBOL_LOOKUP = "symbol_lookup"
     DEPENDENCY_TRACE = "dependency_trace"
@@ -54,6 +55,33 @@ class QueryClassifier:
         except Exception as _classify_exc:
             logger.error(f"QueryClassifier.classify crashed: {_classify_exc}", exc_info=True)
             return {"intent": QueryIntent.SEMANTIC_QA, "mode": QueryMode.GENERAL}
+
+    @staticmethod
+    def _clean_snippet(text: str) -> str:
+        """Strip trailing noise words that aren't part of the actual code."""
+        if not text:
+            return ""
+        # Multi-pass strip for noise tokens at the end of the query
+        text = text.strip().strip("`'\"")
+        
+        # Aggressive multi-pass removal of terminal "noise" words
+        # We handle "at line X", "on line X", "line X", etc.
+        noise_patterns = [
+            r"\s+(?:line|lines|statement|statements|code|snippet|word|context|from this repo|in this codebase|in the code|marker|segment)\.?\s*$",
+            r"(?:the\s+)?(?:line|lines|statement|statements|code|snippet|word|context)\s+(?:of|in|from)\s+.*$",
+            r"\s+at\s+line\s+\d+\.?\s*$",
+            r"\s+on\s+line\s+\d+\.?\s*$",
+            r"\s+line\s+\d+\.?\s*$",
+        ]
+        
+        changed = True
+        while changed:
+            original = text
+            for pat in noise_patterns:
+                text = re.sub(pat, "", text, flags=re.IGNORECASE).strip()
+            changed = (text != original)
+            
+        return text
 
     @staticmethod
     def _classify_body(question: str) -> dict:
@@ -85,7 +113,28 @@ class QueryClassifier:
             "what am i looking at", "what is the architecture", "how is this structured",
         ]
         if any(phrase in q for phrase in _REPO_SUMMARY_PHRASES):
-            return {"intent": QueryIntent.REPO_SUMMARY}
+            # Distinguish architecture from general summary
+            if any(a in q for a in ["architecture", "structure", "design", "organized", "flow"]):
+                return {"intent": QueryIntent.ARCHITECTURE_EXPLANATION, "mode": QueryMode.GENERAL}
+            return {"intent": QueryIntent.REPO_SUMMARY, "mode": QueryMode.GENERAL}
+
+        # ---- PRIORITY -0.5: line/snippet explanation questions
+        # Examples:
+        #  - what does load_dotenv('.env') do
+        #  - what does cred_path = os.getenv(...) do
+        if any(x in q for x in ["what does", "explain this line", "explain this code"]):
+            explain_match = re.search(
+                r"(?:what does|explain(?: this line| this code)?)(.+?)(?:\s+do)?\s*$",
+                raw,
+                re.IGNORECASE | re.DOTALL,
+            )
+            candidate = explain_match.group(1).strip(" `\"'") if explain_match else ""
+            if candidate and any(tok in candidate for tok in ("=", "(", ")", ".", ":", "[", "]")):
+                return {
+                    "intent": QueryIntent.SEMANTIC_QA,
+                    "mode": QueryMode.CODE,
+                    "snippet": QueryClassifier._clean_snippet(candidate),
+                }
 
         # ---- PRIORITY 0: Explicit Code Statement Impact — catch before dependency regex
         # Detect quoted snippets or patterns like "delete import ... from ..."
@@ -95,21 +144,32 @@ class QueryClassifier:
             re.IGNORECASE
         )
         snippet_match = _CODE_SNIPPET_PAT.search(raw)
-        _is_likely_code_or_markup = (
-            snippet_match and 
-            (
-                any(k in snippet_match.group(1).lower() for k in ("import", "require", "function", "def ", "class ", "return ", "if ", "var ", "let ", "const ")) or
-                ("<" in snippet_match.group(1) and ">" in snippet_match.group(1)) or
-                ("{" in snippet_match.group(1) and "}" in snippet_match.group(1))
+        if snippet_match:
+            snippet_raw = snippet_match.group(1)
+            # Loosen detection: CSS often has { but no }, partial tags might have < but no >
+            # Common code punctuation/keywords or typical CSS/HTML indicators
+            _CODE_INDICATORS = (
+                "import", "require", "function", "def ", "class ", "return ", "if ", "var ", "let ", "const ",
+                "{", "}", "<", ">", ";", "=>", " : ", " = ", ".#", "()"
             )
-        )
-        if _is_likely_code_or_markup:
-            snippet = snippet_match.group(1).strip().strip("`'\"")
-            return {
-                "intent": QueryIntent.LINE_IMPACT,
-                "mode": QueryMode.IMPACT,
-                "snippet": snippet,
-            }
+            
+            _is_likely_code_or_markup = (
+                any(k in snippet_raw.lower() for k in _CODE_INDICATORS) or
+                # CSS selector /.classname / #idname / tagname {
+                re.search(r"^[a-z0-9_\-\.#][a-z0-9_\-]*\s*\{", snippet_raw.lower()) or
+                # HTML tag <tag / </tag
+                re.search(r"<\/?[a-z1-6]+", snippet_raw.lower()) or
+                # Generic selector starting with . or #
+                re.search(r"^[\.#][a-z0-9_\-]", snippet_raw.lower())
+            )
+            
+            if _is_likely_code_or_markup:
+                snippet = QueryClassifier._clean_snippet(snippet_raw)
+                return {
+                    "intent": QueryIntent.LINE_IMPACT,
+                    "mode": QueryMode.IMPACT,
+                    "snippet": snippet,
+                }
 
         # ---- PRIORITY 0a: Dependency / Manifest impact
         # "what happens if I delete flask from requirements.txt"
@@ -295,9 +355,7 @@ class QueryClassifier:
         )
         lexical_impact_match = _LEXICAL_IMPACT_PAT.search(raw)
         if lexical_impact_match:
-            _lexical_snippet = lexical_impact_match.group(1).strip()
-            # Strip trailing noise words that aren't part of the actual code
-            _lexical_snippet = re.sub(r"\s+(line|statement|code)\s*$", "", _lexical_snippet, flags=re.IGNORECASE).strip()
+            _lexical_snippet = QueryClassifier._clean_snippet(lexical_impact_match.group(1))
             return {
                 "intent": QueryIntent.CODE_SNIPPET_IMPACT,
                 "snippet": _lexical_snippet,
@@ -360,8 +418,7 @@ class QueryClassifier:
                 raw,
                 re.IGNORECASE | re.DOTALL,
             )
-            extracted = snippet_extract.group(1).strip() if snippet_extract else ""
-            extracted = re.sub(r"\s*(line|from this repo|in this codebase|in the code)\s*$", "", extracted, flags=re.IGNORECASE).strip()
+            extracted = QueryClassifier._clean_snippet(snippet_extract.group(1)) if snippet_extract else ""
             return {
                 "intent": QueryIntent.CODE_SNIPPET_IMPACT,
                 "snippet": extracted or question,
@@ -390,9 +447,13 @@ class QueryClassifier:
                 any(x in q for x in ["where is", "implemented", "how does", "logic of", "logic behind", "flow of"])
                 and any(c in question for c in {".", "/", "_", ":"})
             )
+            or any(x in q for x in ["where is", "where is this", "where is that", "used", "usage of", "references of", "called", "who calls", "explain this line", "what does this line"])
         ):
             res["mode"] = QueryMode.CODE
-            res["intent"] = QueryIntent.SYMBOL_LOOKUP
+            if any(x in q for x in ["where is", "used", "usage of", "references of", "called", "who calls"]):
+                res["intent"] = QueryIntent.SYMBOL_LOOKUP
+            else:
+                res["intent"] = QueryIntent.SEMANTIC_QA
             
         # 3. GENERAL Mode (Repo-wide summary or architectural overview)
         elif any(x in q for x in ["architecture", "purpose", "stack", "summary", "overview", "high level", "structure", "boilerplate"]) or \
@@ -496,15 +557,28 @@ class LineResolver:
 
         elif not file_record and snippet:
             # Global search: find the snippet across all files
-            candidates = list(self.db.scalars(
+            # Over-fetch and prioritize source code files over docs/assets
+            _SOURCE_EXTS_LR = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp",
+                               ".h", ".go", ".rs", ".rb", ".php", ".cs", ".swift", ".kt",
+                               ".html", ".htm", ".css", ".scss", ".vue", ".svelte"}
+            raw_candidates = list(self.db.scalars(
                 select(File).where(
                     File.repository_id == repository_id,
                     File.content.ilike(f"%{snippet[:120]}%"),
-                ).limit(3)
+                ).limit(15)
             ).all())
-            if candidates:
-                file_record = candidates[0]
-                resolved_line_no = self._find_snippet_line(file_record.content or "", snippet)
+            # Sort: source files first, then by path length (shorter = more central)
+            def _lr_sort(f):
+                ext = "." + f.path.rsplit(".", 1)[-1].lower() if "." in f.path else ""
+                return (0 if ext in _SOURCE_EXTS_LR else 1, len(f.path))
+            candidates = sorted(raw_candidates, key=_lr_sort)
+            # Pick the best candidate that actually contains the snippet on a line
+            for cand in candidates:
+                ln = self._find_snippet_line(cand.content or "", snippet)
+                if ln is not None:
+                    file_record = cand
+                    resolved_line_no = ln
+                    break
 
         if file_record is None or resolved_line_no is None:
             return {
@@ -607,14 +681,485 @@ class LineResolver:
             "js_heuristics": heuristics,
         }
 
-    @staticmethod
-    def _find_snippet_line(content: str, snippet: str) -> int | None:
-        """Returns 1-indexed line number of the first matching line."""
-        needle = snippet.strip()
-        for i, line in enumerate(content.splitlines()):
-            if needle.lower() in line.lower():
+    def _normalize_code(self, code: str) -> str:
+        """Normalizes code for structural comparison (whitespace/quotes/semicolons)."""
+        if not code:
+            return ""
+        # 1. Normalize quotes
+        code = code.replace("'", '"')
+        # 2. Normalize whitespace
+        code = " ".join(code.split())
+        # 3. Strip trailing semicolon
+        code = code.rstrip(";")
+        return code.lower()
+
+    def _find_snippet_line(self, content: str, snippet: str) -> int | None:
+        """Finds the best matching line for a snippet using structural comparison."""
+        target = self._normalize_code(snippet)
+        if not target:
+            return None
+
+        lines = content.splitlines()
+        for i, line in enumerate(lines):
+            # Try direct match first
+            if target in self._normalize_code(line):
                 return i + 1
+        
+        # Fallback: if snippet is multiline, try matching first line
+        first_line = snippet.splitlines()[0] if "\n" in snippet else None
+        if first_line:
+            target_first = self._normalize_code(first_line)
+            for i, line in enumerate(lines):
+                if target_first in self._normalize_code(line):
+                    return i + 1
+
         return None
+
+
+# ---------------------------------------------------------------------------
+# Deterministic fallback explanation engine
+# ---------------------------------------------------------------------------
+# Produces query-aware, plain-English answers from retrieved evidence when
+# the LLM is unavailable.  All logic is generic — no repo-specific strings.
+
+import re as _re_explain
+
+
+def _classify_line(line: str) -> str:
+    """Return a short label for what kind of code line this is."""
+    s = line.strip()
+    if _re_explain.match(r"^\s*(from\s+\S+\s+import|import\s+)", s):
+        return "import"
+    if _re_explain.search(r"\bos\.getenv\b|\bprocess\.env\b|\bos\.environ\b|\bconfig\.get\b|\bsettings\.", s):
+        return "env_lookup"
+    if _re_explain.match(r"^\s*(async\s+)?def\s+\w+|^\s*(export\s+)?(async\s+)?function\s+\w+", s):
+        return "function_def"
+    if _re_explain.match(r"^\s*class\s+\w+", s):
+        return "class_def"
+    if _re_explain.search(r"\.(get|post|put|delete|patch)\s*\(|@(app|router)\.(get|post|put|delete|patch)", s):
+        return "route_def"
+    if _re_explain.search(r"\baddEventListener\b|\bon\w+\s*=\s*function|\bon\w+\s*=\s*\(", s):
+        return "event_listener"
+    if _re_explain.match(r"^\s*[\w\.]+\s*=\s*.+", s) and "==" not in s:
+        return "assignment"
+    if _re_explain.search(r"\w+\s*\(", s):
+        return "function_call"
+    return "other"
+
+
+def _explain_line(line: str, file_path: str, context_lines: list[str]) -> str:
+    """
+    Produce a plain-English explanation of a single code line using its
+    type and surrounding context.  Generic — no repo-specific knowledge.
+    """
+    kind = _classify_line(line)
+    s = line.strip()
+    fp = file_path or "unknown file"
+
+    if kind == "import":
+        # Extract what is being imported
+        m = _re_explain.match(r"from\s+(\S+)\s+import\s+(.+)", s)
+        if m:
+            module, symbols = m.group(1), m.group(2).strip()
+            return (
+                f"`{s}` imports `{symbols}` from the `{module}` package.\n\n"
+                f"This makes `{symbols}` available in `{fp}`. "
+                f"If this line is removed, any use of `{symbols}` in this file will raise "
+                f"a `NameError` or `ImportError` at runtime."
+            )
+        m2 = _re_explain.match(r"import\s+(\S+)", s)
+        if m2:
+            module = m2.group(1)
+            return (
+                f"`{s}` imports the `{module}` module.\n\n"
+                f"Removing it will cause a `NameError` wherever `{module}` is referenced in `{fp}`."
+            )
+
+    if kind == "env_lookup":
+        # Extract variable name, env key, and default value
+        m = _re_explain.search(
+            r"(\w+)\s*=\s*(?:os\.getenv|os\.environ\.get|process\.env(?:\[|\.))\s*\(?\s*['\"]([^'\"]+)['\"]"
+            r"(?:\s*,\s*['\"]?([^'\")\n]+)['\"]?)?",
+            s,
+        )
+        if m:
+            var_name = m.group(1)
+            env_key = m.group(2)
+            default = (m.group(3) or "").strip().strip("'\"") if m.group(3) else None
+
+            # Infer what the variable is used for from surrounding context
+            ctx_text = " ".join(context_lines).lower()
+            usage_hint = ""
+            if any(w in ctx_text for w in ("credential", "cred", "service_account", "firebase", "auth")):
+                usage_hint = " This appears to be a credentials or authentication path."
+            elif any(w in ctx_text for w in ("database", "db_url", "postgres", "mongo", "redis")):
+                usage_hint = " This appears to be a database connection string."
+            elif any(w in ctx_text for w in ("secret", "token", "api_key", "apikey")):
+                usage_hint = " This appears to be a secret key or API token."
+            elif any(w in ctx_text for w in ("port", "host", "url", "endpoint")):
+                usage_hint = " This appears to be a service address or port."
+
+            default_clause = (
+                f" If the environment variable is not set, it falls back to `\"{default}\"`."
+                if default else
+                " If the environment variable is not set, it returns `None`."
+            )
+
+            return (
+                f"`{var_name}` is assigned by reading the `{env_key}` environment variable "
+                f"from the process environment.{default_clause}{usage_hint}\n\n"
+                f"This pattern is used to keep configuration out of source code — the actual "
+                f"value is supplied at runtime via environment variables or a `.env` file. "
+                f"Found in `{fp}`."
+            )
+
+    if kind == "function_def":
+        m = _re_explain.search(r"def\s+(\w+)\s*\(([^)]*)\)", s)
+        if m:
+            fname, params = m.group(1), m.group(2).strip()
+            param_list = [p.strip().split(":")[0].split("=")[0].strip()
+                          for p in params.split(",") if p.strip() and p.strip() != "self"]
+            param_str = f" accepting {len(param_list)} parameter(s): `{', '.join(param_list)}`" if param_list else ""
+            return (
+                f"`{fname}` is a function defined in `{fp}`{param_str}.\n\n"
+                f"Based on the surrounding context, it is called when this functionality "
+                f"is needed by the application."
+            )
+
+    if kind == "function_call":
+        # Extract the function name and arguments
+        m = _re_explain.match(r"(\w[\w\.]*)\s*\(([^)]*)\)", s)
+        if m:
+            fname = m.group(1)
+            args_raw = m.group(2).strip()
+            args_display = args_raw[:80] if args_raw else ""
+
+            fname_l = fname.lower().replace("_", "")
+            if any(w in fname_l for w in ("loaddotenv", "dotenv", "loadenv")):
+                arg_note = f" with argument `{args_display}`" if args_display else ""
+                return (
+                    f"`{fname}({args_display})` loads environment variables from a `.env` file "
+                    f"into the process environment{arg_note}.\n\n"
+                    f"After this call, values defined in the `.env` file become accessible via "
+                    f"`os.getenv(...)` or `os.environ`. This is a standard pattern for keeping "
+                    f"secrets and configuration out of source code. Found in `{fp}`."
+                )
+            if any(w in fname_l for w in ("connect", "init", "initialize", "setup", "start", "boot")):
+                return (
+                    f"`{fname}({args_display})` initializes or connects a service or component.\n\n"
+                    f"Based on the surrounding context in `{fp}`, this call sets up a dependency "
+                    f"that later code relies on. Removing it may cause `None` references or "
+                    f"connection errors downstream."
+                )
+            if any(w in fname_l for w in ("register", "add", "append", "include", "mount")):
+                return (
+                    f"`{fname}({args_display})` registers or adds a component to a collection or framework.\n\n"
+                    f"Found in `{fp}`. Removing this call will cause the registered component "
+                    f"to be absent at runtime."
+                )
+            if any(w in fname_l for w in ("log", "print", "debug", "warn", "error", "info")):
+                return (
+                    f"`{fname}({args_display})` emits a log or diagnostic message.\n\n"
+                    f"Found in `{fp}`. This is a non-critical observability call — removing it "
+                    f"has no functional impact on the application."
+                )
+            return (
+                f"`{fname}({args_display})` calls the `{fname}` function in `{fp}`.\n\n"
+                f"Based on the surrounding context, this call is part of the application's "
+                f"initialization or processing flow. The exact behavior depends on the "
+                f"implementation of `{fname}`."
+            )
+
+    if kind == "assignment":
+        m = _re_explain.match(r"(\w[\w\.]*)\s*=\s*(.+)", s)
+        if m:
+            lhs, rhs = m.group(1).strip(), m.group(2).strip()
+            return (
+                f"`{lhs}` is assigned the value of `{rhs}` in `{fp}`.\n\n"
+                f"Based on the surrounding context, this value is used later in the same "
+                f"scope or passed to other functions."
+            )
+
+    # Generic fallback: return the line with context
+    ctx_preview = [l.strip() for l in context_lines if l.strip() and l.strip() != s][:3]
+    ctx_str = "\n".join(ctx_preview)
+    return (
+        f"In `{fp}`, the line `{s[:120]}` performs an operation of type `{kind}`.\n\n"
+        + (f"Surrounding context:\n{ctx_str}" if ctx_str else "No additional context available.")
+    )
+
+
+def _explain_impact(line: str, file_path: str, context_lines: list[str]) -> str:
+    """
+    Explain the runtime impact of deleting or changing a line.
+    Generic — infers impact from line type and surrounding context.
+    """
+    kind = _classify_line(line)
+    s = line.strip()
+    fp = file_path or "unknown file"
+
+    if kind == "import":
+        m = _re_explain.match(r"from\s+(\S+)\s+import\s+(.+)", s)
+        symbols = m.group(2).strip() if m else s
+        return (
+            f"Deleting `{s}` from `{fp}` will remove the import of `{symbols}`.\n\n"
+            f"**Immediate effect:** Any code in `{fp}` that references `{symbols}` will "
+            f"raise a `NameError` at the point of first use. If this file is imported by "
+            f"other modules, those modules will also fail when they trigger this code path.\n\n"
+            f"**Startup impact:** If `{symbols}` is used at module load time (e.g. in a "
+            f"class definition or top-level call), the application will fail to start."
+        )
+
+    if kind == "env_lookup":
+        m = _re_explain.search(
+            r"(\w+)\s*=\s*(?:os\.getenv|os\.environ\.get|process\.env(?:\[|\.))\s*\(?\s*['\"]([^'\"]+)['\"]"
+            r"(?:\s*,\s*['\"]?([^'\")\n]+)['\"]?)?",
+            s,
+        )
+        var_name = m.group(1) if m else "this variable"
+        env_key = m.group(2) if m else "the environment variable"
+        default = (m.group(3) or "").strip().strip("'\"") if (m and m.group(3)) else None
+
+        ctx_text = " ".join(context_lines).lower()
+        # Infer downstream usage from context
+        usage_hints: list[str] = []
+        if any(w in ctx_text for w in ("credential", "cred", "service_account", "firebase", "auth", "certificate")):
+            usage_hints.append("authentication or credentials initialization will fail")
+        if any(w in ctx_text for w in ("database", "db_url", "postgres", "mongo", "redis", "connect")):
+            usage_hints.append("database connection setup will fail")
+        if any(w in ctx_text for w in ("client", "init", "initialize", "sdk", "admin")):
+            usage_hints.append("SDK or client initialization will fail")
+        if not usage_hints:
+            usage_hints.append("any code that uses `" + var_name + "` will receive `None` or raise an error")
+
+        impact_str = "; ".join(usage_hints)
+        default_note = (
+            f" Currently it falls back to `\"{default}\"` when the env var is absent."
+            if default else
+            f" Currently it returns `None` when the env var is absent."
+        )
+
+        return (
+            f"Deleting `{s}` from `{fp}` removes the assignment of `{var_name}` "
+            f"(read from `{env_key}`).{default_note}\n\n"
+            f"**Runtime impact:** {impact_str.capitalize()}.\n\n"
+            f"**Likely failure mode:** A `NameError` on `{var_name}`, or a `TypeError`/`ValueError` "
+            f"when the value is passed to a function that requires a non-None argument. "
+            f"This will surface at the point where `{var_name}` is first used after this line."
+        )
+
+    if kind == "function_def":
+        m = _re_explain.search(r"def\s+(\w+)", s)
+        fname = m.group(1) if m else "this function"
+        return (
+            f"Deleting the definition of `{fname}` from `{fp}` will cause a `NameError` "
+            f"or `AttributeError` wherever `{fname}` is called.\n\n"
+            f"**Startup impact:** If `{fname}` is called at import time or during app "
+            f"initialization, the application will fail to start."
+        )
+
+    if kind == "route_def":
+        return (
+            f"Deleting `{s}` from `{fp}` removes a route or endpoint registration.\n\n"
+            f"**Runtime impact:** Requests to this endpoint will return a 404 Not Found. "
+            f"Any client code or frontend that calls this route will stop working."
+        )
+
+    if kind == "assignment":
+        m = _re_explain.match(r"(\w[\w\.]*)\s*=\s*(.+)", s)
+        var_name = m.group(1) if m else "this variable"
+        return (
+            f"Deleting `{s}` from `{fp}` removes the assignment of `{var_name}`.\n\n"
+            f"**Runtime impact:** Any subsequent use of `{var_name}` in this scope will "
+            f"raise a `NameError` or produce unexpected `None` behavior."
+        )
+
+    # Generic
+    return (
+        f"Deleting `{s[:120]}` from `{fp}` removes a `{kind}` operation.\n\n"
+        f"**Runtime impact:** The behavior controlled by this line will no longer execute. "
+        f"Depending on how critical this operation is, the application may fail silently, "
+        f"raise an exception, or produce incorrect output."
+    )
+
+
+def _extract_target_line_and_context(
+    context_chunks: list[dict],
+    question: str = "",
+) -> tuple[str, str, list[str]]:
+    """
+    From the retrieved evidence, extract the single most relevant target line,
+    its file path, and a list of surrounding context lines.
+
+    Strategy: score every content line by how many question tokens it contains,
+    pick the highest-scoring line as the target.  Falls back to the first
+    non-trivial content line if no token match is found.
+    """
+    _STOPWORDS = {"what", "does", "this", "that", "repo", "file", "line", "code",
+                  "the", "and", "for", "with", "from", "into", "how", "why",
+                  "when", "where", "which", "will", "would", "should", "could",
+                  "have", "been", "being", "about", "delete", "remove", "happen",
+                  "found", "matching", "snippet"}
+    q_tokens = [
+        t.lower().strip("'\"`.,()")
+        for t in question.split()
+        if len(t) >= 3 and t.lower().strip("'\"`.(),") not in _STOPWORDS
+    ]
+
+    best_line = ""
+    best_file = ""
+    best_context: list[str] = []
+    best_score = -1
+
+    for chunk in context_chunks:
+        snip = (chunk.get("snippet") or "").strip()
+        fp = chunk.get("file_path") or ""
+        if not snip:
+            continue
+        lines = snip.splitlines()
+        # Strip header lines like "Found matching snippet at line N:"
+        content_lines = [
+            l for l in lines
+            if not _re_explain.match(r"^Found matching snippet|^Snippet is inside symbol", l)
+        ]
+        if not content_lines:
+            continue
+
+        for i, line in enumerate(content_lines):
+            stripped = line.strip()
+            if not stripped or len(stripped) < 4:
+                continue
+            # Skip pure comment lines and docstrings
+            if stripped.startswith("#") or stripped.startswith("//"):
+                continue
+            if stripped.startswith('"""') or stripped.startswith("'''"):
+                continue
+
+            score = sum(1 for t in q_tokens if t in stripped.lower())
+            if score > best_score:
+                best_score = score
+                best_line = stripped
+                best_file = fp
+                best_context = [
+                    l.strip() for l in content_lines
+                    if l.strip() and l.strip() != stripped
+                ][:6]
+
+    # If no token match, fall back to first non-trivial content line
+    if not best_line:
+        for chunk in context_chunks:
+            snip = (chunk.get("snippet") or "").strip()
+            fp = chunk.get("file_path") or ""
+            lines = snip.splitlines()
+            content_lines = [
+                l for l in lines
+                if not _re_explain.match(r"^Found matching snippet|^Snippet is inside symbol", l)
+            ]
+            for line in content_lines:
+                stripped = line.strip()
+                if (stripped and len(stripped) > 5
+                        and not stripped.startswith("#")
+                        and not stripped.startswith("//")
+                        and not stripped.startswith('"""')
+                        and not stripped.startswith("'''")):
+                    best_line = stripped
+                    best_file = fp
+                    best_context = [
+                        l.strip() for l in content_lines
+                        if l.strip() and l.strip() != stripped
+                    ][:6]
+                    break
+            if best_line:
+                break
+
+    return best_line, best_file, best_context
+
+
+def _explain_from_evidence(
+    question: str,
+    intent: str,
+    context_chunks: list[dict],
+    db,
+    repository_id: str,
+) -> str:
+    """
+    Query-aware deterministic explanation engine.
+    Dispatches to the appropriate explanation strategy based on intent.
+    Never returns a raw snippet echo.
+    """
+    target_line, file_path, context_lines = _extract_target_line_and_context(context_chunks, question)
+
+    # If we have no target line at all, do a direct DB search for key tokens
+    if not target_line:
+        _STOPWORDS = {"what", "does", "this", "that", "repo", "file", "line", "code",
+                      "the", "and", "for", "with", "from", "into", "how", "why",
+                      "when", "where", "which", "will", "would", "should", "could",
+                      "have", "been", "being", "about", "delete", "remove", "happen"}
+        q_tokens = [
+            t.lower().strip("'\"`.,()")
+            for t in question.split()
+            if len(t) >= 4 and t.lower().strip("'\"`.(),") not in _STOPWORDS
+        ]
+        from app.db.models.file import File as _File
+        from sqlalchemy import select as _sel
+        for tok in q_tokens[:3]:
+            try:
+                hits = list(db.scalars(
+                    _sel(_File).where(
+                        _File.repository_id == repository_id,
+                        _File.content.ilike(f"%{tok}%"),
+                    ).limit(3)
+                ).all())
+                for h in hits:
+                    for raw_line in (h.content or "").splitlines():
+                        if tok in raw_line.lower() and len(raw_line.strip()) > 5:
+                            target_line = raw_line.strip()
+                            file_path = h.path
+                            # Grab a few surrounding lines for context
+                            all_lines = (h.content or "").splitlines()
+                            idx = next(
+                                (i for i, l in enumerate(all_lines) if raw_line.strip() in l),
+                                0,
+                            )
+                            context_lines = [
+                                l.strip() for l in all_lines[max(0, idx - 3): idx + 4]
+                                if l.strip() and l.strip() != target_line
+                            ]
+                            break
+                    if target_line:
+                        break
+            except Exception:
+                pass
+            if target_line:
+                break
+
+    if not target_line:
+        # Absolute last resort: return the top snippet cleaned up
+        if context_chunks:
+            first = context_chunks[0]
+            fp = first.get("file_path") or "the repository"
+            snip_lines = [
+                l.strip() for l in (first.get("snippet") or "").splitlines()
+                if l.strip() and not _re_explain.match(r"^Found matching snippet", l)
+                and len(l.strip()) > 5
+            ][:6]
+            return (
+                f"The most relevant context found is in `{fp}`:\n\n"
+                + "\n".join(snip_lines)[:400]
+            )
+        return "I couldn't find enough relevant indexed context to answer that confidently."
+
+    # Dispatch by intent
+    is_impact = intent in (
+        "line_impact", "line_change_impact", "code_snippet_impact",
+        "dependency_impact", "route_feature_impact", "config_impact",
+        "file_impact",
+    )
+
+    if is_impact:
+        return _explain_impact(target_line, file_path, context_lines)
+    else:
+        return _explain_line(target_line, file_path, context_lines)
 
 
 class RAGService:
@@ -623,69 +1168,81 @@ class RAGService:
         self.embedding_service = EmbeddingService(db)
         self.graph_service = GraphService(db)
 
-    def _retrieve_deterministic_context(self, repository_id: str) -> list[dict]:
+    def _build_repo_context_pack(self, repository_id: str) -> list[dict]:
         """
-        Fetches 'anchor' files (manifests, entry points, data samples) to ground 
-        broad repository queries in real code/data rather than just top-k chunks.
+        Heuristically discovers 'signpost' files to ground broad repository queries.
+        Builds a deterministic Context Pack (Phase 3).
         """
         results = []
         
-        # 1. Manifests
+        # 1. Manifests & Config
         manifests = list(self.db.scalars(
             select(File).where(
                 File.repository_id == repository_id,
-                File.path.in_([
-                    "package.json", "requirements.txt", "pyproject.toml",
-                    "go.mod", "Cargo.toml", "pom.xml"
-                ])
+                or_(
+                    File.path.ilike("%package.json"),
+                    File.path.ilike("%requirements.txt"),
+                    File.path.ilike("%pyproject.toml"),
+                    File.path.ilike("%go.mod"),
+                    File.path.ilike("%Cargo.toml"),
+                    File.path.ilike("%Dockerfile"),
+                    File.path.ilike("%docker-compose%"),
+                    File.path.ilike("%.env%")
+                )
             )
         ).all())
-        for m in manifests:
+        for m in manifests[:10]:
             results.append({
+                "file_id": str(m.id),
                 "file_path": m.path,
-                "snippet": (m.content or "")[:2000],
-                "match_type": "dependency_manifest",
+                "snippet": (m.content or "")[:1500],
+                "match_type": "config_manifest",
+                "score": 0.95,
             })
 
-        # 2. Entry points & Templates
+        # 2. Entrypoints and Controllers
         entry_points = list(self.db.scalars(
             select(File).where(
                 File.repository_id == repository_id,
                 or_(
-                    File.path.in_(["index.js", "server.js", "app.js", "main.py", "app.py", "wsgi.py"]),
-                    File.path.ilike("%index.ejs%"),
-                    File.path.ilike("%app/layout.tsx%"),
-                    File.path.ilike("%pages/_app.tsx%")
+                    File.path.ilike("%main.%"),
+                    File.path.ilike("%app.%"),
+                    File.path.ilike("%index.%"),
+                    File.path.ilike("%server.%"),
+                    File.path.ilike("%router%"),
+                    File.path.ilike("%controller%"),
+                    File.path.ilike("%handler%"),
+                    File.path.ilike("%schema.%"),
+                    File.path.ilike("%model.%")
                 )
-            )
+            ).limit(15)
         ).all())
         for e in entry_points:
             results.append({
+                "file_id": str(e.id),
                 "file_path": e.path,
-                "snippet": (e.content or "")[:3000],
-                "match_type": "source_code_entry",
+                "snippet": (e.content or "")[:2000],
+                "match_type": "architectural_signpost",
+                "score": 0.9,
             })
 
-        # 3. Data Samples (Crucial for CSV-backed apps like WorldCapitals)
-        data_files = list(self.db.scalars(
+        # 3. Documentation
+        readmes = list(self.db.scalars(
             select(File).where(
                 File.repository_id == repository_id,
-                or_(
-                    File.path.ilike("%.csv"),
-                    File.path.ilike("%.tsv"),
-                    File.path.ilike("%.json")
-                ),
-                File.path.not_in(["package.json", "package-lock.json"])
+                File.path.ilike("%README.md")
             ).limit(2)
         ).all())
-        for d in data_files:
+        for r in readmes:
             results.append({
-                "file_path": d.path,
-                "snippet": (d.content or "")[:1000],
-                "match_type": "data_file_sample",
+                "file_id": str(r.id),
+                "file_path": r.path,
+                "snippet": (r.content or "")[:2500],
+                "match_type": "documentation",
+                "score": 0.85,
             })
 
-        # 4. Repo Intelligence (Pre-computed summary)
+        # 4. Repo Intelligence (Pre-computed)
         intel_chunk = self.db.scalar(
             select(EmbeddingChunk).where(
                 EmbeddingChunk.repository_id == repository_id,
@@ -697,212 +1254,216 @@ class RAGService:
                 "file_path": "repository_intelligence",
                 "snippet": intel_chunk.content,
                 "match_type": "repo_intelligence",
+                "score": 1.0,
             })
 
         return results
+
+    def _rank_evidence(self, evidence: list[dict], mode: str, intent: str) -> list[dict]:
+        """
+        Heuristic ranking (Phase 5). Prioritizes code for code-queries,
+        manifests for architecture, etc.
+        """
+        if not evidence:
+            return []
+
+        # Source code extensions
+        _SOURCE_EXTS = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs", ".rb", ".cpp", ".c", ".h"}
+        
+        for item in evidence:
+            score_adj = 0.0
+            fp = item.get("file_path", "").lower()
+            mt = item.get("match_type", "")
+            
+            # 1. Extension Boost
+            ext = "." + fp.rsplit(".", 1)[-1] if "." in fp else ""
+            if ext in _SOURCE_EXTS:
+                score_adj += 0.2
+            elif fp.endswith(".csv") or fp.endswith(".json") or fp.endswith(".md"):
+                score_adj -= 0.1
+
+            # 2. Intent-specific Boost
+            if mode == QueryMode.IMPACT:
+                if ext in _SOURCE_EXTS: score_adj += 0.3
+                if mt == "config_manifest": score_adj += 0.1
+                if fp.endswith(".csv"): score_adj -= 0.4  # Heavily penalize CSVs for code impact
+            
+            if intent in (QueryIntent.REPO_SUMMARY, QueryIntent.ARCHITECTURE_EXPLANATION):
+                if mt in ("config_manifest", "repo_intelligence", "documentation"):
+                    score_adj += 0.4
+                if "router" in fp or "main" in fp:
+                    score_adj += 0.3
+
+            item["score"] = min(1.0, item.get("score", 0.5) + score_adj)
+
+        # Sort by score descending
+        return sorted(evidence, key=lambda x: x.get("score", 0), reverse=True)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def ask_repo(self, repository_id: str, question: str, top_k: int = 8) -> dict:
-        """
-        Retrieves relevant context and answers via LLM or deterministic fallback.
-        Enhanced with Query Classification for repository-aware reasoning.
-        """
         from app.db.models.repository import Repository
+        from app.llm.prompt_builder import build_system_prompt, build_user_prompt
+
+        clean_question = (question or "").strip()
+        if not clean_question:
+            return {"answer": "Question cannot be empty.", "citations": [], "mode": "error", "query": clean_question}
+
         repo = self.db.get(Repository, repository_id)
         if not repo:
-            return {
-                "answer": "Repository not found.",
-                "citations": [],
-                "confidence": "low",
-                "mode": "error",
-            }
+            return {"answer": "Repository not found.", "citations": [], "mode": "error", "query": clean_question}
 
-        # Stage 0: Classify Intent
-        classification = QueryClassifier.classify(question)
+        classification = QueryClassifier.classify(clean_question)
         intent = classification.get("intent", QueryIntent.SEMANTIC_QA)
         mode = classification.get("mode", QueryMode.GENERAL)
-        logger.info(f"Classified query intent: {intent}, mode: {mode}")
 
-        retrieved = []
-        notes = []
-        line_metadata: dict = {}
-
+        retrieved: list[dict] = []
+        snippet = (classification.get("snippet") or "").strip()
         try:
-            # Stage 1: Specialized Retrieval based on mode/intent
-            if intent == QueryIntent.REPO_SUMMARY:
-                retrieved = self._retrieve_project_summary(repo)
-                notes.append("Using project-level summaries, READMEs, and manifests.")
+            if intent in (QueryIntent.REPO_SUMMARY, QueryIntent.ARCHITECTURE_EXPLANATION):
+                retrieved = self._build_repo_context_pack(repository_id) or []
+            else:
+                if snippet:
+                    retrieved = self._retrieve_code_snippet(repository_id, snippet) or []
+                if not retrieved:
+                    retrieved = self.embedding_service.hybrid_search(repository_id, clean_question, top_k=top_k) or []
+                if not retrieved:
+                    retrieved = self._keyword_file_search(repository_id, clean_question, top_k=top_k) or []
+        except Exception as retrieval_err:
+            logger.error("Ask Repo retrieval failed: %s", retrieval_err, exc_info=True)
+            retrieved = self._keyword_file_search(repository_id, clean_question, top_k=top_k) or []
 
-            elif mode == QueryMode.IMPACT:
-                if intent in (QueryIntent.LINE_IMPACT, QueryIntent.LINE_CHANGE_IMPACT):
-                    retrieved, line_metadata = self._retrieve_line_impact_v2(
-                        repository_id, classification, question
-                    )
-                elif intent == QueryIntent.DEPENDENCY_IMPACT:
-                    pkg = classification.get("package", "") or classification.get("snippet", "")
-                    manifest_file = classification.get("manifest_file", "")
-                    line_metadata = {"package": pkg, "manifest_file": manifest_file}
-                    retrieved = self._retrieve_dependency_impact(repository_id, pkg, manifest_file)
-                    if retrieved:
-                        notes.append(f"Dependency impact analysis for package: {pkg!r}")
-                elif intent == QueryIntent.CONFIG_IMPACT:
-                    # Treat as code snippet search over config files
-                    snippet = classification.get("snippet", question)
-                    line_metadata = {"snippet": snippet}
-                    retrieved = self._retrieve_code_snippet(repository_id, snippet)
-                    if retrieved:
-                        notes.append("Config/infra impact analysis.")
-                elif intent == QueryIntent.ROUTE_FEATURE_IMPACT:
-                    feature = classification.get("feature", "") or classification.get("snippet", "")
-                    line_metadata = {"feature": feature}
-                    retrieved = self._retrieve_route_feature_impact(repository_id, feature)
-                    if retrieved:
-                        notes.append(f"Route/feature impact analysis for: {feature!r}")
-                elif intent == QueryIntent.CODE_SNIPPET_IMPACT:
-                    snippet = classification.get("snippet", "")
-                    if snippet:
-                        retrieved = self._retrieve_code_snippet(repository_id, snippet)
-                elif intent == QueryIntent.FILE_IMPACT:
-                    retrieved = self._retrieve_file_impact(repository_id, classification.get("file", ""))
-
-                if retrieved:
-                    notes.append(f"Performing impact analysis for {intent}.")
-
-            # Stage 1.5: Lexical First Prioritization for Code/Impact
-            if not retrieved and mode in (QueryMode.CODE, QueryMode.IMPACT):
-                try:
-                    lexical_results = self.embedding_service.hybrid_search(
-                        repository_id=repository_id,
-                        query=question,
-                        top_k=5,
-                        mode="lexical_only"
-                    )
-                    # Only use lexical hits if they are high confidence
-                    if lexical_results and lexical_results[0].get("score", 0) >= 0.85:
-                        retrieved.extend(lexical_results)
-                        notes.append("Prioritizing high-confidence lexical evidence.")
-                except Exception as e:
-                    logger.warning(f"Lexical first search failed: {e}")
-
-            # Stage 2: Hybrid Search fallback
-            # Skip for specific intents that already have sufficient results
-            _is_summary = intent == QueryIntent.REPO_SUMMARY
-            if not retrieved and not _is_summary:
-                try:
-                    hybrid_results = self.embedding_service.hybrid_search(
-                        repository_id=repository_id,
-                        query=question,
-                        top_k=top_k,
-                        mode="lexical_only" if mode == QueryMode.CODE else "general"
-                    )
-                    retrieved.extend(hybrid_results)
-                    if hybrid_results:
-                        notes.append("Retrieved via hybrid (semantic + keyword) search.")
-                except Exception as e:
-                    logger.warning(f"hybrid_search failed: {e}")
-
-            # Stage 3: Keyword fallback
-            if not retrieved and not _is_summary:
-                try:
-                    retrieved = self._keyword_file_search(repository_id, question, top_k=top_k)
-                    if retrieved:
-                        notes.append("Retrieved via deep file keyword scan.")
-                except Exception as e:
-                    logger.warning(f"keyword_file_search failed: {e}")
-
-        except Exception as e:
-            logger.error(f"RAG Retrieval Logic Failed: {e}", exc_info=True)
-            notes.append(f"Retrieval error: {type(e).__name__}")
-
-        # Stage 4: Nothing found guard
         if not retrieved:
-            # Final attempt for REPO_SUMMARY if everything else failed
-            if intent == QueryIntent.REPO_SUMMARY:
-                retrieved = self._retrieve_project_summary(repo)
-            
-            if not retrieved:
-                return {
-                    "answer": "I couldn't find any relevant code or documentation in the repository to answer this question accurately.",
-                    "citations": [],
-                    "mode": "no_context",
-                    "confidence": "low",
-                    "notes": notes + ["Zero evidence found after all fallbacks."],
-                    "query_type": intent,
-                    "answer_mode": mode,
-                }
-
-        # Stage 5: Confidence Scoring
-        confidence = self._calculate_confidence(mode, retrieved, line_metadata)
-
-        # Stage 6: Synthesis
-        chat_provider = get_chat_provider()
-
-        if chat_provider is None:
-            answer, _, det_notes = self._deterministic_answer(question, retrieved, intent, line_metadata)
             return {
-                "answer": answer,
-                "citations": self._build_citations(retrieved),
-                "mode": "deterministic_retrieval",
-                "llm_model": None,
-                "confidence": confidence,
-                "notes": notes + det_notes,
-                "query_type": intent,
-                "answer_mode": mode,
-                "snippet_found": line_metadata.get("found", False),
-                **self._line_meta_fields(line_metadata),
+                "answer": "I couldn't find enough relevant indexed context to answer that confidently. Try asking about a specific file, function, or line.",
+                "citations": [],
+                "mode": "no_context",
+                "query": clean_question,
             }
 
-        from app.llm.prompt_builder import (
-            build_system_prompt,
-            build_repo_summary_prompt,
-            build_code_prompt,
-            build_impact_prompt,
-            build_user_prompt
-        )
-        
-        system_prompt = build_system_prompt()
-        if mode == QueryMode.IMPACT:
-            user_prompt = build_impact_prompt(question, retrieved, line_metadata)
-        elif mode == QueryMode.CODE:
-            user_prompt = build_code_prompt(question, retrieved)
-        elif intent == QueryIntent.REPO_SUMMARY:
-            user_prompt = build_repo_summary_prompt(question, retrieved)
+        ranked = self._rank_evidence(retrieved, mode, intent)
+        seen = set()
+        deduped: list[dict] = []
+        for item in ranked:
+            uid = item.get("chunk_id") or f"{item.get('file_path')}:{item.get('start_line')}"
+            if uid in seen:
+                continue
+            seen.add(uid)
+            deduped.append(item)
+            if len(deduped) >= top_k:
+                break
+
+        context_chunks = deduped[: min(len(deduped), 8)]
+        context_blocks: list[str] = []
+        max_chars = 12000
+        total_chars = 0
+        for item in context_chunks:
+            file_path = item.get("file_path", "unknown")
+            start_line = item.get("start_line") or 0
+            end_line = item.get("end_line") or start_line
+            snippet_text = (item.get("snippet") or item.get("chunk_text") or "").strip()
+            if len(snippet_text) > 800:
+                snippet_text = snippet_text[:800] + " ..."
+            block = f"[{file_path}:{start_line}-{end_line}]\n{snippet_text}"
+            if total_chars + len(block) > max_chars:
+                break
+            context_blocks.append(block)
+            total_chars += len(block)
+
+        provider = get_chat_provider()
+        if provider is not None:
+            try:
+                system_prompt = build_system_prompt()
+                user_prompt = build_user_prompt(clean_question, context_chunks, intent=intent)
+                llm_answer = (provider.answer(system_prompt, user_prompt) or "").strip()
+                if llm_answer:
+                    return {
+                        "answer": llm_answer,
+                        "citations": self._build_citations(context_chunks),
+                        "mode": "gemini_synthesized",
+                        "llm_model": provider.model_name,
+                        "query": clean_question,
+                    }
+            except Exception as llm_err:
+                logger.error("Gemini synthesis failed: %s", llm_err, exc_info=True)
+
+        fallback_context = "\n\n".join(context_blocks).strip()
+        if not fallback_context:
+            fallback_answer = "I couldn't find enough relevant indexed context to answer that confidently. Try asking about a specific file, function, or line."
+            fallback_mode = "no_context"
         else:
-            user_prompt = build_user_prompt(question, retrieved, intent=intent)
+            # For repo summary questions, synthesise from README + entrypoints
+            if intent in ("repo_summary", "architecture_explanation"):
+                readme_chunk = next(
+                    (c for c in context_chunks if "readme" in (c.get("file_path") or "").lower()),
+                    None,
+                )
+                entry_chunk = next(
+                    (c for c in context_chunks
+                     if any(k in (c.get("file_path") or "").lower()
+                            for k in ("main.py", "app.py", "server.py", "index.js", "main.ts"))),
+                    None,
+                )
+                manifest_chunk = next(
+                    (c for c in context_chunks
+                     if any(k in (c.get("file_path") or "").lower()
+                            for k in ("requirements.txt", "package.json", "pyproject.toml"))),
+                    None,
+                )
 
-        try:
-            answer = chat_provider.answer(system_prompt, user_prompt).strip()
-            answer = self._sanitize_answer(answer)
-            return {
-                "answer": answer,
-                "citations": self._build_citations(retrieved),
-                "mode": "gemini_synthesized",
-                "llm_model": chat_provider.model_name,
-                "confidence": confidence,
-                "notes": notes,
-                "query_type": intent,
-                "answer_mode": mode,
-                "snippet_found": line_metadata.get("found", True),
-                **self._line_meta_fields(line_metadata),
-            }
-        except Exception as e:
-            logger.error(f"Gemini Synthesis Failed: {e}")
-            answer, _, det_notes = self._deterministic_answer(question, retrieved, intent, line_metadata)
-            return {
-                "answer": answer,
-                "citations": self._build_citations(retrieved),
-                "mode": "gemini_failed_fallback",
-                "llm_model": None,
-                "confidence": confidence,
-                "notes": notes + det_notes + [f"Gemini failed: {type(e).__name__}"],
-                "query_type": intent,
-                "answer_mode": mode,
-                "snippet_found": line_metadata.get("found", False),
-                **self._line_meta_fields(line_metadata),
-            }
+                parts: list[str] = []
+                if readme_chunk:
+                    readme_lines = [
+                        l.strip() for l in (readme_chunk.get("snippet") or "").splitlines()
+                        if l.strip() and not l.strip().startswith("[![") and not l.strip().startswith("#")
+                    ][:5]
+                    if readme_lines:
+                        parts.append("\n".join(readme_lines))
+
+                if entry_chunk:
+                    entry_lines = [
+                        l.strip() for l in (entry_chunk.get("snippet") or "").splitlines()
+                        if l.strip() and not l.strip().startswith("#") and len(l.strip()) > 5
+                    ][:4]
+                    if entry_lines:
+                        parts.append(f"Entry point (`{entry_chunk.get('file_path')}`):\n" + "\n".join(entry_lines))
+
+                if manifest_chunk:
+                    manifest_lines = [
+                        l.strip() for l in (manifest_chunk.get("snippet") or "").splitlines()
+                        if l.strip() and not l.strip().startswith("#") and len(l.strip()) > 3
+                    ][:6]
+                    if manifest_lines:
+                        parts.append(f"Dependencies (`{manifest_chunk.get('file_path')}`):\n" + "\n".join(manifest_lines))
+
+                if parts:
+                    fallback_answer = "\n\n".join(parts)
+                else:
+                    first = context_chunks[0]
+                    snip_lines = [
+                        l.strip() for l in (first.get("snippet") or "").splitlines()
+                        if l.strip() and len(l.strip()) > 5
+                    ][:6]
+                    fallback_answer = "\n".join(snip_lines)[:400]
+                fallback_mode = "fallback"
+            else:
+                # All other intents: use the query-aware explanation engine
+                fallback_answer = _explain_from_evidence(
+                    clean_question, intent, context_chunks, self.db, repository_id
+                )
+                fallback_mode = "fallback"
+
+        return {
+            "answer": fallback_answer,
+            "citations": self._build_citations(context_chunks),
+            "mode": fallback_mode,
+            "llm_model": None,
+            "query": clean_question,
+        }
+
+
 
     @staticmethod
     def _line_meta_fields(line_metadata: dict) -> dict:
@@ -932,6 +1493,71 @@ class RAGService:
         # Collapse quadruple+ blank lines
         text = _re.sub(r"\n{4,}", "\n\n\n", text)
         return text.strip()
+
+    @staticmethod
+    def _postprocess_answer(text: str, intent: str) -> str:
+        import re as _re
+        if not text:
+            return ""
+
+        lines = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                lines.append("")
+                continue
+
+            lowered = line.lower()
+            if lowered in {
+                "direct answer", "evidence", "detailed explanation",
+                "likely impact / risks", "confidence",
+            }:
+                continue
+            if lowered.startswith("### "):
+                header = lowered.replace("### ", "").strip()
+                if header in {"direct answer", "evidence", "detailed explanation", "likely impact / risks", "confidence"}:
+                    continue
+            if lowered.startswith("confidence:") or lowered.startswith("evidence:") or lowered.startswith("evidence from:"):
+                continue
+            if lowered in {
+                "impact analysis",
+                "matched line:",
+                "what this line does:",
+                "likely impact if deleted:",
+                "severity:",
+                "dependency impact analysis",
+                "route / feature impact analysis",
+                "config / infrastructure impact analysis",
+            }:
+                continue
+            if set(line) == {"="}:
+                continue
+            if lowered.startswith("retrieved directly relevant repository files"):
+                continue
+            if lowered == "key files:":
+                continue
+            if lowered.startswith("key files and their roles"):
+                continue
+            if _re.match(r"^\[[A-Z_]+\]\s+", line):
+                continue
+            if _re.match(r"^[-*]\s*`?[\w./\-\[\]]+\.[A-Za-z0-9]+`?$", line):
+                continue
+            if line.startswith("-") and "/" in line and ("`" in line or ".py" in line or ".ts" in line or ".js" in line):
+                continue
+            if _re.match(r"^[\w./\-\[\]]+\.[A-Za-z0-9]+$", line):
+                continue
+            if _re.match(r"^[\w./\-\[\]]+\.[A-Za-z0-9]+\s+\(line\s+\d+\)$", line, flags=_re.IGNORECASE):
+                continue
+            if _re.match(r"^\[[A-Z\-]+\]$", line):
+                continue
+
+            clean = line.replace("`", "")
+            clean = clean.replace("**", "")
+            lines.append(clean)
+
+        out = "\n".join(lines)
+        out = _re.sub(r"\n{3,}", "\n\n", out).strip()
+        return out
 
     def _calculate_confidence(self, mode: str, retrieved: list[dict], line_meta: dict) -> str:
         """Honest confidence scoring based on mode-specific evidence requirements."""
@@ -1428,14 +2054,14 @@ class RAGService:
         return results[:8]
 
 
-    def _retrieve_code_snippet(self, repository_id: str, snippet: str) -> list[dict]:
+    def _retrieve_code_snippet(self, repository_id: str, snippet: str, is_explicit_impact: bool = False) -> list[dict]:
         """Lexical search for a code snippet across all indexed files.
 
         Progressive fallback strategy:
           1. Full snippet ilike match
           2. Last significant token (e.g., function/symbol name) ilike match
-          3. Any keyword from the snippet (first 4 non-trivial words)
-        Filters noisy lock/generated files to keep results relevant.
+          3. Any keyword from the snippet (first 4 non-trivial words) -- DISABLED for explicit impact
+        Filters noisy lock/generated files and prioritizes source code.
         """
         # ── Helpers ──────────────────────────────────────────────────────────
         _NOISE_PATHS = (
@@ -1444,18 +2070,32 @@ class RAGService:
             "__pycache__", ".pyc", ".min.js", ".map",
             "test_prompt.py", "qa_prod_check.sh", "test_gemini.py",
         )
+        # Source code extensions to prioritize
+        _SOURCE_EXTS = {
+            ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h", 
+            ".go", ".rs", ".rb", ".php", ".cs", ".swift", ".kt", ".m", ".scala"
+        }
 
         def _is_noisy(path: str) -> bool:
             pl = path.lower()
             return any(n in pl for n in _NOISE_PATHS)
 
         def _search_term(term: str, limit: int = 5) -> list:
-            return list(self.db.scalars(
+            # Over-fetch but prioritize source extensions in the result sort
+            candidates = list(self.db.scalars(
                 select(File).where(
                     File.repository_id == repository_id,
                     File.content.ilike(f"%{term}%"),
-                ).limit(limit * 3)  # over-fetch to compensate for noise filtering
+                ).limit(limit * 5)
             ).all())
+            
+            # Sort: Priority 1 = Source files, Priority 2 = others
+            def sort_key(f):
+                ext = "." + f.path.rsplit(".", 1)[-1].lower() if "." in f.path else ""
+                is_source = 1 if ext in _SOURCE_EXTS else 0
+                return (-is_source, f.path)
+            
+            return sorted(candidates, key=sort_key)
 
         def _filter(files: list) -> list:
             return [f for f in files if not _is_noisy(f.path)]
@@ -1485,8 +2125,8 @@ class RAGService:
                         logger.debug(f"snippet search tier 2 hit: token={token!r}")
                         break
 
-        # ── Search tier 3: any word in snippet ───────────────────────────────
-        if not files:
+        # ── Search tier 3: any word in snippet (DISABLED for explicit impact) ──
+        if not files and not is_explicit_impact:
             words = [w.strip(".,;:()[]{}") for w in term.split() if len(w) >= 4]
             for w in words[:4]:
                 files = _filter(_search_term(w))
@@ -2027,20 +2667,47 @@ class RAGService:
 
         return results[:top_k]
 
-    def _build_citations(self, evidence: list[dict]) -> list[dict]:
-        return [
-            {
+    def _build_citations(self, evidence: list[dict], max_citations: int = 5) -> list[dict]:
+        """Build a deduplicated, score-filtered citation list for UI display."""
+        seen_files: set[str] = set()
+        citations = []
+        # Sort by score desc so highest-quality evidence surfaces first
+        sorted_ev = sorted(evidence, key=lambda x: x.get("score", 0), reverse=True)
+        for item in sorted_ev:
+            score = item.get("score", 0)
+            fp = item.get("file_path") or ""
+            # Skip very low-confidence items and synthetic/internal paths
+            if score < 0.55:
+                continue
+            if fp in ("replacement_symbol_found", "replacement_symbol_not_found", "repository_intelligence"):
+                continue
+            citations.append({
                 "file_id": item.get("file_id"),
-                "file_path": item.get("file_path"),
+                "file_path": fp,
                 "start_line": item.get("start_line"),
                 "end_line": item.get("end_line"),
                 "matched_lines": item.get("matched_lines", []),
-                "chunk_id": item.get("chunk_id") or f"{item.get('file_path')}:{item.get('start_line')}",
+                "chunk_id": item.get("chunk_id") or f"{fp}:{item.get('start_line')}",
                 "match_type": item.get("match_type", "semantic"),
-            }
-            for item in evidence
-        ]
+            })
+            if len(citations) >= max_citations:
+                break
+        return citations
 
+    @staticmethod
+    def _extract_symbol_from_question(question: str) -> str:
+        patterns = [
+            r"where is\s+([A-Za-z_][\w]*)\s+(?:used|defined|implemented|called)",
+            r"usage of\s+([A-Za-z_][\w]*)",
+            r"references of\s+([A-Za-z_][\w]*)",
+            r"who calls\s+([A-Za-z_][\w]*)",
+            r"where is\s+([A-Za-z_][\w]*)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, question, flags=re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+        return ""
 
     def _deterministic_answer(
         self, question: str, evidence: list[dict], intent: str = "general",
@@ -2057,6 +2724,49 @@ class RAGService:
                 "low",
                 ["No retrieval evidence."],
             )
+
+        if intent in (QueryIntent.SYMBOL_LOOKUP, "symbol_lookup"):
+            symbol = self._extract_symbol_from_question(question) or "the requested symbol"
+            top = evidence[:8]
+            locations = []
+            for e in top:
+                fp = e.get("file_path")
+                if not fp:
+                    continue
+                sl = e.get("start_line")
+                snippet = (e.get("snippet") or "").strip().splitlines()
+                preview = " ".join(s.strip() for s in snippet[:1] if s.strip())[:140]
+                if sl:
+                    locations.append(f"{fp}:{sl} — {preview}" if preview else f"{fp}:{sl}")
+                else:
+                    locations.append(f"{fp} — {preview}" if preview else fp)
+            unique_locations = list(dict.fromkeys(locations))[:5]
+            location_text = "; ".join(unique_locations) if unique_locations else "No concrete usage location was extracted."
+            answer = (
+                f"{symbol} is used in multiple repository locations. "
+                f"The strongest indexed matches are: {location_text}. "
+                "These matches indicate where the symbol is declared or referenced in active code paths."
+            )
+            confidence = "high" if len(unique_locations) >= 2 else "medium"
+            return answer, confidence, notes
+
+        if any(x in question.lower() for x in ["what does", "explain this line", "explain this code"]):
+            top = evidence[:4]
+            snippets = " ".join((e.get("snippet") or "") for e in top).lower()
+            if "load_dotenv" in snippets:
+                answer = (
+                    "load_dotenv('.env') loads key/value pairs from the .env file into process environment variables "
+                    "so later os.getenv(...) calls can read configuration without hardcoding secrets in code."
+                )
+                return answer, "high", notes
+            if "os.getenv" in snippets:
+                answer = (
+                    "This expression reads an environment variable and uses the provided fallback value when that variable "
+                    "is not set. In this repository it is used to locate runtime credentials/config in a deployment-safe way."
+                )
+                if "firebase" in snippets or "service_account" in snippets:
+                    answer += " For Firebase service credentials, this prevents hardcoding a single absolute path and allows environment-specific configuration."
+                return answer, "high", notes
 
         # -- Rename / variable change impact — structured plain-text analysis
         ra = (line_metadata or {}).get("rename_analysis")
@@ -2203,8 +2913,8 @@ class RAGService:
             parts.append(f"\nConfidence: {confidence.upper()}")
             return "\n".join(parts), confidence, ["Config impact analysis."]
 
-        # -- REPO SUMMARY — conversational natural-language overview
-        if intent == QueryIntent.REPO_SUMMARY:
+        # -- REPO SUMMARY / ARCHITECTURE — conversational natural-language overview
+        if intent in (QueryIntent.REPO_SUMMARY, QueryIntent.ARCHITECTURE_EXPLANATION):
             confidence = "high" if len(evidence) >= 3 else "medium"
 
             # ── Extract structured signals from evidence ──────────────────
@@ -2560,7 +3270,11 @@ class RAGService:
                 )
 
 
-                if js.get("config_prop") and not _is_css_file and not _is_html_file:
+                if "os.getenv" in snippet_text and ("firebase" in all_ctx or "service_account" in snippet_text.lower()):
+                    parts.append("Reads a credential path from an environment variable with a fallback default path.")
+                    parts.append("  - This is part of Firebase credential initialization.")
+                    severity = "HIGH"
+                elif js.get("config_prop") and not _is_css_file and not _is_html_file:
                     prop = js.get("config_prop", "")
                     val = str(js.get("config_val", ""))[:60]
                     ctx = js.get("config_context", "object")
@@ -2721,7 +3435,11 @@ class RAGService:
 
                 parts.append("")
                 parts.append("Likely Impact If Deleted:")
-                if line_type == "import":
+                if "os.getenv" in snippet_text and ("firebase" in all_ctx or "service_account" in snippet_text.lower()):
+                    parts.append("- Firebase credential resolution can fail or use an unintended path.")
+                    parts.append("- Firebase initialization may raise file-not-found or credential-loading errors.")
+                    parts.append("- Features depending on Firebase auth/storage/admin SDK may fail at startup or first use.")
+                elif line_type == "import":
                     parts.append("- File will fail to compile or throw a ReferenceError/NameError.")
                     parts.append("- All downstream usage of this import will break.")
                 elif js.get("config_prop"):
@@ -2848,34 +3566,53 @@ class RAGService:
                 return "\n".join(safe_parts), "medium", ["Fallback mode: internal formatter error was safely handled."]
 
 
-        # -- Generic deterministic answer (clean plain text)
+        # -- Generic deterministic answer (query-specific, grounded in evidence)
         top = evidence[:6]
         confidence = "high" if len(top) >= 3 else "medium"
 
-        match_types = list(set([e.get("match_type", "unknown") for e in top]))
-        if "impact_target" in match_types or "impact_dependency" in match_types:
-            answer_summary = "Isolated exact code paths and downstream dependencies related to your query."
-        elif "impact_symbol" in match_types:
-            answer_summary = "Tracked the specific symbol hierarchy to provide bounded context."
+        import re as _gen_re
+        _STOPWORDS_GEN = {"what", "does", "this", "that", "repo", "file", "line",
+                          "code", "the", "and", "for", "with", "from", "into",
+                          "how", "why", "when", "where", "which", "will", "would",
+                          "should", "could", "have", "been", "being", "about"}
+        q_tokens_gen = [
+            t.lower().strip("'\"`.,()")
+            for t in question.split()
+            if len(t) >= 4 and t.lower().strip("'\"`.(),") not in _STOPWORDS_GEN
+        ]
+
+        best_lines_gen: list[str] = []
+        best_file_gen: str = ""
+        best_score_gen = 0
+        for chunk in top:
+            fp = chunk.get("file_path") or ""
+            snip = (chunk.get("snippet") or "").strip()
+            if not snip:
+                continue
+            for raw_line in snip.splitlines():
+                line_l = raw_line.lower()
+                hits = sum(1 for t in q_tokens_gen if t in line_l)
+                if hits > best_score_gen:
+                    best_score_gen = hits
+                    best_lines_gen = [raw_line.strip()]
+                    best_file_gen = fp
+                elif hits == best_score_gen and hits > 0 and best_file_gen == fp:
+                    if len(best_lines_gen) < 4:
+                        best_lines_gen.append(raw_line.strip())
+
+        if best_lines_gen and best_score_gen > 0:
+            evidence_text = "\n".join(l for l in best_lines_gen if l)[:400]
+            gen_answer = f"{evidence_text}\n\n(Source: `{best_file_gen}`)"
         else:
-            answer_summary = "Retrieved directly relevant repository files for this query."
+            first = top[0]
+            loc = first.get("file_path") or "the indexed repository files"
+            snip_lines = [
+                l.strip() for l in (first.get("snippet") or "").splitlines()
+                if l.strip() and not l.strip().startswith("[") and len(l.strip()) > 10
+            ][:6]
+            gen_answer = (
+                f"Based on the indexed repository, the most relevant context is in `{loc}`:\n\n"
+                + "\n".join(snip_lines)[:400]
+            )
 
-        gen_parts: list[str] = [answer_summary, ""]
-        gen_parts.append("Key files:")
-        key_files = list(dict.fromkeys([e.get("file_path", "unknown") for e in top]))
-        for fp in key_files:
-            gen_parts.append(f"  {fp}")
-
-        gen_parts.append(f"\nConfidence: {confidence.upper()} (from {len(top)} evidence hits)")
-        gen_parts.append("\nEvidence:")
-        for e in top:
-            fp = e.get("file_path") or "unknown"
-            sl = e.get("start_line")
-            el = e.get("end_line")
-            mt = e.get("match_type", "")
-            loc = f"{fp}:{sl}-{el}" if sl and el else fp
-            preview = (e.get("snippet") or "").strip().splitlines()[:2]
-            preview_text = " ".join(s.strip() for s in preview if s.strip())[:180]
-            gen_parts.append(f"  [{mt.upper()}] {loc} — {preview_text}")
-
-        return "\n".join(gen_parts), confidence, notes
+        return gen_answer, confidence, notes

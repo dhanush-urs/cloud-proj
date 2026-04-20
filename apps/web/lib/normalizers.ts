@@ -20,6 +20,7 @@ export function normalizeRepository(repo: any): Repository {
     created_at: repo?.created_at || new Date().toISOString(),
     primary_language: repo?.primary_language || null,
     framework: repo?.framework || null,
+    languages_used: Array.isArray(repo?.languages_used) ? repo.languages_used : [],
   };
 }
 
@@ -111,6 +112,7 @@ export function normalizeSearchResponse(data: any): SemanticSearchResponse {
 export function normalizeFileListResponse(data: any): FileListResponse {
   return {
     repository_id: data?.repository_id || "",
+    status: data?.status || null,
     total: data?.total || 0,
     items: Array.isArray(data?.items) ? data.items : [],
   };
@@ -142,5 +144,24 @@ export function normalizePRImpactResponse(data: any): PRImpactResponse {
     reviewer_suggestions: Array.isArray(data?.reviewer_suggestions)
       ? data.reviewer_suggestions
       : [],
+  };
+}
+/**
+ * Normalizes a file detail response.
+ */
+export function normalizeFileDetailResponse(data: any): FileDetailResponse {
+  return {
+    id: data?.id || "",
+    repository_id: data?.repository_id || "",
+    path: data?.path || "",
+    language: data?.language || null,
+    file_kind: data?.file_kind || "text",
+    line_count: data?.line_count || 0,
+    parse_status: data?.parse_status || "unknown",
+    is_generated: !!data?.is_generated,
+    is_vendor: !!data?.is_vendor,
+    content: data?.content || null,
+    raw_url: data?.raw_url || null,
+    is_binary: !!data?.is_binary,
   };
 }

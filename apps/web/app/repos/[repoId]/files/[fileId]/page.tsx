@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { RepoSubnav } from "@/components/layout/RepoSubnav";
 import { CodeBlockViewer } from "@/components/repo/CodeBlockViewer";
 import { DataFileViewer } from "@/components/repo/DataFileViewer";
+import { OfficePreviewPane } from "@/components/repo/OfficePreviewPane";
 import { getRepositoryFileDetail } from "@/lib/api";
 
 type Props = {
@@ -50,8 +51,41 @@ export default async function FileDetailPage({ params, searchParams }: Props) {
   }
 
   const isImage = file?.path && /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(file.path);
-  const rawUrl = `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/v1/repos/${repoId}/files/${fileId}/raw`;
+  const isPdf = file?.path && /\.pdf$/i.test(file.path);
+  const isOffice = file?.path && /\.(pptx|ppt|docx|doc|xlsx|xls|odt|odp|ods)$/i.test(file.path);
+  const isPpt = file?.path && /\.(pptx|ppt)$/i.test(file.path);
 
+  // Build a browser-safe raw asset URL.
+  // - If API base is configured for the browser, use it.
+  // - Otherwise keep relative /api/v1/... paths so reverse proxies still work.
+  const publicApiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
+  const publicApiOrigin = publicApiBase.endsWith("/api/v1")
+    ? publicApiBase.slice(0, -"/api/v1".length)
+    : publicApiBase;
+
+  let rawUrl = "";
+  if (file?.raw_url) {
+    if (/^https?:\/\//i.test(file.raw_url)) {
+      rawUrl = file.raw_url;
+    } else if (publicApiOrigin) {
+      rawUrl = `${publicApiOrigin}${file.raw_url}`;
+    } else {
+      rawUrl = file.raw_url;
+    }
+  } else if (publicApiOrigin) {
+    rawUrl = `${publicApiOrigin}/api/v1/repos/${repoId}/files/${fileId}/raw`;
+  } else {
+    rawUrl = `/api/v1/repos/${repoId}/files/${fileId}/raw`;
+  }
+
+  const shouldForceDownload =
+    Boolean(isOffice) || Boolean(file?.is_binary && !isImage && !isPdf);
+  const rawAssetLinkProps = shouldForceDownload
+    ? { download: file?.path?.split("/").pop() || true }
+    : { target: "_blank", rel: "noreferrer" as const };
+
+  // previewUrl is always relative — works via the Next.js /api/v1 proxy rewrite.
+  const previewUrl = `/api/v1/repos/${repoId}/files/${fileId}/preview`;
 
   return (
     <div>
@@ -120,6 +154,13 @@ export default async function FileDetailPage({ params, searchParams }: Props) {
                   <Badge label="generated" tone="yellow" />
                 ) : null}
                 {file.is_vendor ? <Badge label="vendor" tone="blue" /> : null}
+                <a
+                  href={rawUrl}
+                  {...rawAssetLinkProps}
+                  className="inline-flex items-center rounded-full bg-slate-800 px-2.5 py-0.5 text-xs font-semibold text-slate-300 border border-slate-700 hover:bg-slate-700 transition-colors"
+                >
+                  Open Raw Asset ↗
+                </a>
               </div>
             </div>
 
@@ -169,6 +210,66 @@ export default async function FileDetailPage({ params, searchParams }: Props) {
                     Binary Image Asset
                   </div>
                 </div>
+              ) : isPdf ? (
+                <div className="h-[800px] w-full bg-slate-900/50 flex flex-col">
+                  <div className="bg-slate-900 border-b border-slate-800 px-4 py-2 flex justify-between items-center text-[10px] text-slate-500 font-mono">
+                    <span>PDF PREVIEW</span>
+                    <a 
+                      href={rawUrl} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="text-blue-400 hover:underline"
+                    >
+                      Open in New Tab ↗
+                    </a>
+                  </div>
+                  <div className="flex-1 relative">
+                    <iframe
+                      src={rawUrl}
+                      className="h-full w-full border-0 absolute inset-0"
+                      title="PDF Preview"
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center -z-10 bg-slate-950 p-6 text-center">
+                      <div className="max-w-xs">
+                        <p className="text-sm text-slate-400 mb-2">Browser blocked the inline PDF preview.</p>
+                        <a 
+                          href={rawUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-500 hover:underline border border-blue-900/50 rounded px-2 py-1"
+                        >
+                          Click to View Raw Asset
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : isOffice ? (
+                isPpt ? (
+                  <OfficePreviewPane
+                    previewUrl={previewUrl}
+                    rawUrl={rawUrl}
+                    filename={file.path.split("/").pop() || ""}
+                  />
+                ) : (
+                  <div className="px-6 py-12 text-center">
+                    <div className="inline-flex flex-col items-center gap-4 rounded-2xl border border-slate-700 bg-slate-900/60 p-8 max-w-sm mx-auto">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-indigo-500/10 border border-indigo-500/20 text-2xl">
+                        📄
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-slate-200 mb-1">
+                          Office Document — No Inline Preview
+                        </div>
+                        <p className="text-xs text-slate-400 leading-relaxed">
+                          {file.path.split(".").pop()?.toUpperCase()} files cannot be rendered
+                          inline in the browser. Use the &ldquo;Open Raw Asset&rdquo; button
+                          above to download and open locally.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )
               ) : file.content ? (
                 <div className="p-4">
                   <DataFileViewer
@@ -180,8 +281,17 @@ export default async function FileDetailPage({ params, searchParams }: Props) {
               ) : (
                 <div className="px-6 py-10 text-center text-sm text-slate-500">
                   <div className="mb-2 text-slate-400 font-medium">No text content available.</div>
-                  {file.file_kind === "binary" ? (
-                    <div>This is a binary file. Use the "Open Raw" button to view or download it.</div>
+                  {file.is_binary || file.file_kind === "binary" ? (
+                    <div className="space-y-4">
+                      <p>This is a binary asset that cannot be rendered as text.</p>
+                      <a
+                        href={rawUrl}
+                        download={file.path.split("/").pop() || true}
+                        className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors"
+                      >
+                        Download / Open Raw Asset
+                      </a>
+                    </div>
                   ) : (
                     <div>The file content has not been indexed yet.</div>
                   )}

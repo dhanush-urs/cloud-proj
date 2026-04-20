@@ -1,5 +1,5 @@
 import re
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.db.models.file import File
@@ -65,23 +65,29 @@ class FileService:
     def __init__(self, db: Session):
         self.db = db
 
-    def list_files(self, repository_id: str, limit: int = 500) -> list[File]:
+    def list_files(self, repository_id: str, limit: int = 500) -> list[dict]:
         """
         Returns all repository files that are real project assets.
-        Hides only generated/vendor/compiled/OS junk.
-        Does NOT require text content or line_count > 0 —
-        binary assets and templates are valid repo files.
+        USE RAW SQL for the hotfix to bypass ANY ORM/schema mismatch.
         """
-        rows = list(
-            self.db.scalars(
-                select(File)
-                .where(File.repository_id == repository_id)
-                .order_by(File.path.asc())
-                .limit(limit * 3)  # over-fetch to allow client-side junk filter
-            ).all()
-        )
-        # Apply path-based junk filter in Python (avoids SQL LIKE complexity)
-        visible = [f for f in rows if not _is_junk_path(f.path)]
+        try:
+            stmt = text("""
+                SELECT id, path, language, file_kind, line_count, parse_status 
+                FROM files 
+                WHERE repository_id = :rid 
+                ORDER BY path ASC 
+                LIMIT :limit
+            """)
+            result = self.db.execute(stmt, {"rid": repository_id, "limit": limit * 3})
+            # Convert to list of dicts immediately
+            rows = [dict(row._mapping) for row in result]
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Raw SQL file listing failed", exc_info=True)
+            return []
+
+        # Apply path-based junk filter in Python
+        visible = [f for f in rows if not _is_junk_path(f.get("path", ""))]
         return visible[:limit]
 
     def get_file(self, repository_id: str, file_id: str) -> File | None:

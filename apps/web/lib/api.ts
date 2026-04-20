@@ -8,6 +8,7 @@ import {
   normalizeFileListResponse,
   normalizeHotspotResponse,
   normalizePRImpactResponse,
+  normalizeFileDetailResponse,
 } from "./normalizers";
 import type {
   AskRepoResponse,
@@ -148,7 +149,7 @@ export async function getRepositoryFiles(
   const data = await safeFetch(
     `/repos/${repoId}/files?limit=${limit}`,
     { cache: "no-store" },
-    { files: [], total: 0, limit }
+    { repository_id: repoId, status: "unknown", items: [], total: 0 }
   );
   return normalizeFileListResponse(data);
 }
@@ -157,11 +158,12 @@ export async function getRepositoryFileDetail(
   repoId: string,
   fileId: string
 ): Promise<FileDetailResponse | null> {
-  return safeFetch(
+  const data = await safeFetch(
     `/repos/${repoId}/files/${fileId}`,
     { cache: "no-store" },
     null
   );
+  return data ? normalizeFileDetailResponse(data) : null;
 }
 
 export async function semanticSearch(
@@ -185,22 +187,27 @@ export async function askRepo(
   repoId: string,
   payload: { question: string; top_k?: number }
 ): Promise<AskRepoResponse> {
-  const data = await safeFetch(
-    `/repos/${repoId}/ask`,
-    {
+  const fallback: AskRepoResponse = normalizeAskRepoResponse({
+    question: payload.question,
+    answer: "The intelligence system is temporarily unavailable.",
+    citations: [],
+    mode: "general",
+  });
+  try {
+    const url = `${API_BASE_URL}/repos/${repoId}/ask`;
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
       body: JSON.stringify(payload),
-    },
-    {
-      question: payload.question,
-      answer: "The intelligence system is temporarily unavailable.",
-      context_used: [],
-      mode: "general",
-    }
-  );
-  return normalizeAskRepoResponse(data);
+      // 30s timeout for Ask Repo — cold DB queries on large repos need more time
+      signal: AbortSignal.timeout(30000),
+    });
+    return normalizeAskRepoResponse(await handleResponse(res, fallback));
+  } catch (err) {
+    console.error(`[API] askRepo error for repo ${repoId}:`, (err as any).message);
+    return fallback;
+  }
 }
 
 export async function getHotspots(

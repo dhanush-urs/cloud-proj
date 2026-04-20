@@ -12,12 +12,24 @@ from app.graph.neo4j_client import Neo4jClient
 class GraphService:
     def __init__(self, db: Session):
         self.db = db
-        self.neo4j = Neo4jClient()
+        try:
+            self.neo4j = Neo4jClient()
+            self._neo4j_error: str | None = None
+        except RuntimeError as exc:
+            self.neo4j = None  # type: ignore[assignment]
+            self._neo4j_error = str(exc)
+
+    def _require_neo4j(self):
+        """Raise a legible error if neo4j is unavailable. Call at the start of any neo4j method."""
+        if self.neo4j is None:
+            raise RuntimeError(self._neo4j_error or "Neo4j is unavailable in this environment.")
 
     def close(self):
-        self.neo4j.close()
+        if self.neo4j is not None:
+            self.neo4j.close()
 
     def sync_repository_graph(self, repository: Repository) -> dict:
+        self._require_neo4j()
         try:
             resolver = ImportResolver(self.db)
             resolved_imports = resolver.resolve_repository_imports(repository.id)
@@ -89,6 +101,7 @@ class GraphService:
             self.close()
 
     def get_repository_graph_summary(self, repository_id: str) -> dict:
+        self._require_neo4j()
         try:
             query = """
             MATCH (r:Repository {id: $repository_id})

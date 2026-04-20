@@ -56,6 +56,8 @@ class EmbeddingService:
 
         total_chunks = 0
         processed_files = 0
+        failed_files = 0
+        _COMMIT_BATCH = 100  # commit every N chunks to limit transaction size
 
         for file_record in files:
             # Embed all text-like file kinds — not just source/config
@@ -74,29 +76,47 @@ class EmbeddingService:
             if not file_path.exists() or not file_path.is_file():
                 continue
 
-            chunks = self.chunker.chunk_file(file_path)
-            if not chunks:
-                continue
+            try:
+                chunks = self.chunker.chunk_file(file_path)
+                if not chunks:
+                    continue
 
-            for chunk in chunks:
-                vector = self.provider.embed_text(chunk["content"])
+                for chunk in chunks:
+                    try:
+                        vector = self.provider.embed_text(chunk["content"])
 
-                chunk_row = EmbeddingChunk(
-                    repository_id=repository.id,
-                    file_id=file_record.id,
-                    chunk_type=chunk["chunk_type"],
-                    content=chunk["content"],
-                    start_line=chunk.get("start_line"),
-                    end_line=chunk.get("end_line"),
-                    embedding_model=self.provider.model_name,
-                    embedding_vector=self.local_engine.serialize(vector),
-                )
-                self.db.add(chunk_row)
-                total_chunks += 1
+                        chunk_row = EmbeddingChunk(
+                            repository_id=repository.id,
+                            file_id=file_record.id,
+                            chunk_type=chunk["chunk_type"],
+                            content=chunk["content"],
+                            start_line=chunk.get("start_line"),
+                            end_line=chunk.get("end_line"),
+                            embedding_model=self.provider.model_name,
+                            embedding_vector=self.local_engine.serialize(vector),
+                        )
+                        self.db.add(chunk_row)
+                        total_chunks += 1
 
-            processed_files += 1
+                        # Periodic commit to limit rollback surface
+                        if total_chunks % _COMMIT_BATCH == 0:
+                            self.db.commit()
+
+                    except Exception as chunk_err:
+                        # NON-FATAL: skip this chunk, continue with next
+                        print(f"[WARN] Chunk embed failed for {file_record.path}: {chunk_err}")
+
+                processed_files += 1
+
+            except Exception as file_err:
+                # NON-FATAL: skip this file, continue with next
+                failed_files += 1
+                print(f"[WARN] embed_repository: skipped file {file_record.path}: {file_err}")
 
         self.db.commit()
+
+        if failed_files:
+            print(f"[INFO] embed_repository: {processed_files} files embedded, {failed_files} skipped")
 
         return {
             "processed_files": processed_files,

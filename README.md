@@ -35,35 +35,60 @@ repobrain/
 
 ## 🚥 Getting Started
 
-### 1. Requirements
-*   Docker & Docker Compose
-*   Node.js 20+
-*   Python 3.11+
-*   Google Gemini API Key
+> **All make commands must be run from the repository root** (`repobrain/`).
+> Running them from subdirectories (e.g. `apps/api/`) will fail with "No rule to make target".
 
-### 2. Infrastructure Setup
+### 1. Prerequisites
+
+- Docker & Docker Compose
+- A `.env` file with valid credentials (copy from `.env.example`)
+- Google Gemini API Key (set `GEMINI_API_KEY` in `.env`)
+
+### 2. Configure environment
+
 ```bash
 cp .env.example .env
-docker compose -f infra/compose/docker-compose.dev.yml up -d
+# Edit .env and fill in GEMINI_API_KEY and any other required values
 ```
 
-### 3. Backend Setup
+### 3. Start the full stack
+
 ```bash
-cd apps/api
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+# From repo root
+make up
 ```
 
-### 4. Frontend Setup
+This builds and starts all services: API, frontend (Next.js), background worker (Celery), PostgreSQL, Redis, and Neo4j. The build step installs all Python and Node dependencies inside the containers.
+
+Visit **[http://localhost:3000](http://localhost:3000)** once the stack is healthy.
+
+### 4. Stop the stack
+
 ```bash
-cd apps/web
-npm install
-npm run dev
+# From repo root
+make down
 ```
 
-Visit **[http://localhost:3000](http://localhost:3000)** to explore RepoBrain!
+### Other useful make targets (all run from repo root)
+
+| Command | Purpose |
+|---|---|
+| `make logs` | Tail live logs from all containers |
+| `make restart` | Hard restart (tears down volumes, rebuilds) |
+| `make api-shell` | Open a shell in the API container |
+| `make api-worker-shell` | Open a shell in the Celery worker container |
+| `make postgres-shell` | Open a psql session |
+| `make neo4j-shell` | Open a Cypher shell |
+
+---
+
+> **⚠️ Do not start the backend with `uvicorn` directly from `apps/api/`.**
+>
+> The backend depends on `neo4j`, `celery`, `redis`, and other packages that are only installed
+> inside the Docker image (via `apps/api/requirements.txt` during `docker build`).
+> Running `uvicorn app.main:app` on your system Python without first installing all requirements
+> locally will fail with `ModuleNotFoundError`. The Docker-based `make up` workflow is the
+> intended and supported local development path.
 
 ### 5. Safari Manual Verification Checklist
 - [ ] Open `http://localhost:3000` in Safari on macOS.
