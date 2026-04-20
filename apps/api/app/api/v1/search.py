@@ -103,6 +103,15 @@ def ask_repository(
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    # STAGE GATE: Refuse queries while indexing or in failed state
+    # This prevents generic "Load failed" messages by failing fast with a clear reason.
+    READY_STATUSES = {"ready", "success", "parsed", "indexed", "embedded", "completed"}
+    if repository.status not in READY_STATUSES:
+        refusal = "Ask Repo is unavailable until indexing completes."
+        if repository.status == "failed":
+            refusal = "Ask Repo is unavailable because indexing failed."
+        raise HTTPException(status_code=400, detail=refusal)
+
     rag_service = RAGService(db)
     result = rag_service.ask_repo(
         repository_id=repo_id,

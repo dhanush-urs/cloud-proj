@@ -29,6 +29,7 @@ export function AskRepoForm({ repoId }: Props) {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setResult(null);
 
     try {
       const response = await askRepo(repoId, {

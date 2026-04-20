@@ -30,8 +30,19 @@ async function handleResponse<T>(
   fallback: T
 ): Promise<T> {
   if (!response.ok) {
-    console.error(`[API] ${response.url} failed: ${response.status}`);
-    return fallback;
+    let errorMessage = `API Error ${response.status}`;
+    try {
+      const errorData = await response.json();
+      if (errorData && errorData.detail) {
+        errorMessage = typeof errorData.detail === 'string' 
+          ? errorData.detail 
+          : JSON.stringify(errorData.detail);
+      }
+    } catch (e) {
+      // Not JSON or no detail field
+    }
+    console.error(`[API] ${response.url} failed: ${errorMessage}`);
+    throw new Error(errorMessage);
   }
 
   try {
