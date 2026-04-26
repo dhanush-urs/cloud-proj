@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
 
+    # Railway injects PORT dynamically — respect it
+    PORT: int = 8000
+    HOST: str = "0.0.0.0"
+
     DATABASE_URL: str = "postgresql+psycopg://repobrain:repobrain@postgres:5432/repobrain"
     REDIS_URL: str = "redis://redis:6379/0"
 
@@ -31,16 +35,27 @@ class Settings(BaseSettings):
     GITHUB_APP_PRIVATE_KEY: str | None = None
     GITHUB_WEBHOOK_SECRET: str | None = None
 
-    # CORS
+    # CORS — comma-separated list of allowed origins
+    # Example for Railway: "https://your-frontend.up.railway.app,http://localhost:3000"
     CORS_ORIGINS: str = "http://localhost:3000"
+
+    # Optional: explicit frontend URL (used for Railway CORS auto-config)
+    FRONTEND_URL: str | None = None
 
     @property
     def cors_origins_list(self) -> list[str]:
-        if not self.CORS_ORIGINS:
-            return []
-        if self.CORS_ORIGINS == "*":
-            return ["*"]
-        return [o.strip() for o in self.CORS_ORIGINS.split(",")]
+        origins = set()
+        if self.CORS_ORIGINS:
+            if self.CORS_ORIGINS == "*":
+                return ["*"]
+            for o in self.CORS_ORIGINS.split(","):
+                o = o.strip()
+                if o:
+                    origins.add(o)
+        # Also include FRONTEND_URL if set
+        if self.FRONTEND_URL:
+            origins.add(self.FRONTEND_URL.rstrip("/"))
+        return list(origins)
 
     # Provider selection
     LLM_PROVIDER: str = "gemini"           # gemini | none

@@ -10,16 +10,14 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     bash \
-    libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user
 RUN groupadd -r repobrain && useradd -r -g repobrain repobrain
 
 COPY requirements.txt .
-COPY requirements-dev.txt .
 
-RUN pip install --no-cache-dir -r requirements-dev.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
@@ -29,6 +27,8 @@ RUN mkdir -p /app/data/repos /app/data/tmp \
 
 USER repobrain
 
+# PORT is injected by Railway at runtime; default to 8000 for local Docker use
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Production start: no --reload, reads PORT from environment
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

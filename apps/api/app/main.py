@@ -60,3 +60,9 @@ def root():
         "version": settings.APP_VERSION,
         "docs": "/docs",
     }
+
+
+@app.get("/health")
+def health():
+    """Railway health check endpoint."""
+    return {"status": "ok", "service": "repobrain-api"}
